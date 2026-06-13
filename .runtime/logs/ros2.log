@@ -1,0 +1,14 @@
+Waiting for /fmu topics...
+/fmu topics detected.
+[INFO] [launch]: All log files can be found below /home/p/.ros/log/2026-06-13-10-34-01-785998-p-5223
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [px4_autonomy_mode-1]: process started with pid [5999]
+[px4_autonomy_mode-1] [DEBUG] [1781318041.916418373] [px4_autonomy_mode]: Waiting for FMU...
+[px4_autonomy_mode-1] [DEBUG] [1781318042.349494219] [px4_autonomy_mode]: Checking message compatibility...
+[px4_autonomy_mode-1] [DEBUG] [1781318042.353984689] [px4_autonomy_mode]: Subscriber found, continuing
+[px4_autonomy_mode-1] [DEBUG] [1781318042.354046633] [px4_autonomy_mode]: Publisher found, continuing
+[px4_autonomy_mode-1] [DEBUG] [1781318042.529790977] [px4_autonomy_mode]: Registering 'ROS2 Autonomy' (arming check: 1, mode: 1, mode executor: 0)
+[px4_autonomy_mode-1] [DEBUG] [1781318042.529857692] [px4_autonomy_mode]: Subscriber found, continuing
+[px4_autonomy_mode-1] [DEBUG] [1781318042.529934160] [px4_autonomy_mode]: Publisher found, continuing
+[px4_autonomy_mode-1] [DEBUG] [1781318042.540671651] [px4_autonomy_mode]: Got RegisterExtComponentReply
+[px4_autonomy_mode-1] [DEBUG] [1781318042.552808441] [px4_autonomy_mode]: Arming check request (id=1, only printed once)
