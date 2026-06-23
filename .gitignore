@@ -5,3 +5,11 @@
 /local
 /log
 /sim
+/.runtime
+/tmp
+/experiments
+*.bag
+*.pyc
+__pycache__/
+**/__pycache__/
+*.log

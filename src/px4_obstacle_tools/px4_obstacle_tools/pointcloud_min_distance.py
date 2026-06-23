@@ -11,7 +11,7 @@ class PointCloudMinDistance(Node):
     def __init__(self) -> None:
         super().__init__("pointcloud_min_distance")
 
-        self.declare_parameter("pointcloud_topic", "/lidar/points")
+        self.declare_parameter("pointcloud_topic", "/livox/lidar")
         self.declare_parameter("distance_topic", "/perception/min_obstacle_distance")
         self.declare_parameter("max_distance_m", 20.0)
         self.declare_parameter("min_distance_m", 0.1)
@@ -21,6 +21,7 @@ class PointCloudMinDistance(Node):
         self.declare_parameter("max_y_m", 2.0)
         self.declare_parameter("min_z_m", -1.5)
         self.declare_parameter("max_z_m", 1.5)
+        self.declare_parameter("distance_mode", "euclidean")
         self.declare_parameter("no_obstacle_distance_m", 20.0)
 
         pointcloud_topic = self.get_parameter("pointcloud_topic").value
@@ -33,10 +34,12 @@ class PointCloudMinDistance(Node):
         self._max_y_m = float(self.get_parameter("max_y_m").value)
         self._min_z_m = float(self.get_parameter("min_z_m").value)
         self._max_z_m = float(self.get_parameter("max_z_m").value)
+        self._distance_mode = str(self.get_parameter("distance_mode").value).strip().lower()
         self._no_obstacle_distance_m = float(self.get_parameter("no_obstacle_distance_m").value)
 
         self._publisher = self.create_publisher(Float32, distance_topic, 10)
         self._received_first_cloud = False
+        self._last_debug_log_time = 0.0
         self._subscription = self.create_subscription(
             PointCloud2,
             pointcloud_topic,
@@ -48,7 +51,8 @@ class PointCloudMinDistance(Node):
             f"Converting {pointcloud_topic} to {distance_topic} "
             f"with ROI x=[{self._min_x_m:.1f}, {self._max_x_m:.1f}], "
             f"y=[{self._min_y_m:.1f}, {self._max_y_m:.1f}], "
-            f"z=[{self._min_z_m:.1f}, {self._max_z_m:.1f}]"
+            f"z=[{self._min_z_m:.1f}, {self._max_z_m:.1f}], "
+            f"mode={self._distance_mode}"
         )
 
     def _on_pointcloud(self, msg: PointCloud2) -> None:
@@ -61,6 +65,7 @@ class PointCloudMinDistance(Node):
 
         closest = self._no_obstacle_distance_m
         valid_points = 0
+        closest_xyz = None
 
         for x, y, z in point_cloud2.read_points(
             msg,
@@ -74,10 +79,12 @@ class PointCloudMinDistance(Node):
             ):
                 continue
 
-            distance = math.sqrt((x * x) + (y * y) + (z * z))
+            distance = self._measure_distance(x, y, z)
             if self._min_distance_m <= distance <= self._max_distance_m:
                 valid_points += 1
-                closest = min(closest, distance)
+                if distance < closest:
+                    closest = distance
+                    closest_xyz = (x, y, z)
 
         out = Float32()
         out.data = float(closest)
@@ -85,6 +92,23 @@ class PointCloudMinDistance(Node):
 
         if valid_points == 0:
             self.get_logger().debug("No obstacle points inside ROI")
+        elif closest_xyz is not None:
+            x, y, z = closest_xyz
+            now_s = self.get_clock().now().nanoseconds / 1e9
+            if now_s - self._last_debug_log_time >= 2.0:
+                self._last_debug_log_time = now_s
+                self.get_logger().debug(
+                    f"Closest point xyz=({x:.2f}, {y:.2f}, {z:.2f}) d={closest:.2f}"
+                )
+
+    def _measure_distance(self, x: float, y: float, z: float) -> float:
+        if self._distance_mode == "x":
+            return abs(x)
+        if self._distance_mode == "y":
+            return abs(y)
+        if self._distance_mode == "z":
+            return abs(z)
+        return math.sqrt((x * x) + (y * y) + (z * z))
 
 
 def main() -> None:

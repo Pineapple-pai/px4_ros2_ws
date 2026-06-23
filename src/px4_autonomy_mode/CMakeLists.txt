@@ -16,6 +16,7 @@ find_package(rclcpp REQUIRED)
 find_package(px4_ros2_cpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 include_directories(include ${Eigen3_INCLUDE_DIRS})
 
@@ -27,6 +28,7 @@ target_link_libraries(px4_autonomy_mode
   Eigen3::Eigen
   px4_ros2_cpp::px4_ros2_cpp
   rclcpp::rclcpp
+  yaml-cpp
 )
 
 ament_target_dependencies(px4_autonomy_mode

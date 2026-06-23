@@ -1,0 +1,21 @@
+# PX4 ROS2 Autonomy 多航点航线文件
+# 由航点编辑器生成 (tools/waypoint_editor.html)
+# 使用: MISSION_FILE=missions/sample_mission.yaml ./scripts/start_px4_sim.sh
+
+mission_altitude_m: 2.0
+max_horizontal_velocity_m_s: 0.8
+acceptance_radius_m: 0.35
+mission_timeout_s: 180
+
+enable_local_avoidance: true
+avoidance_trigger_distance_m: 3.0
+avoidance_clearance_m: 2.0
+avoidance_lateral_offset_m: 1.5
+avoidance_forward_offset_m: 2.0
+avoidance_speed_m_s: 0.35
+
+waypoints:
+  - {x: 0.00, y: 0.00, z: -2.00}
+  - {x: 2.00, y: 0.00, z: -2.00}
+  - {x: 2.00, y: 2.00, z: -2.00}
+  - {x: 0.00, y: 2.00, z: -2.00}

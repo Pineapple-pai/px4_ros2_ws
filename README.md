@@ -2,6 +2,8 @@
 
 这个工作区是一个面向 PX4 多旋翼自主飞行的 ROS 2 Humble 基础骨架。它基于 PX4 的 ROS 2 接口库和自定义模式机制，而不是旧式的 ROS Offboard 示例。
 
+如果你想深入理解代码结构、控制循环、任务来源、避障状态机和感知数据流，请看 [代码和实现原理说明](docs/CODE_IMPLEMENTATION_README.md)。
+
 ## 工作区结构
 
 - `src/px4_msgs`

@@ -19,6 +19,16 @@ def generate_launch_description():
     obstacle_abort_distance_m = LaunchConfiguration("obstacle_abort_distance_m")
     obstacle_hold_timeout_s = LaunchConfiguration("obstacle_hold_timeout_s")
     enable_obstacle_hold = LaunchConfiguration("enable_obstacle_hold")
+    enable_local_avoidance = LaunchConfiguration("enable_local_avoidance")
+    avoidance_trigger_distance_m = LaunchConfiguration("avoidance_trigger_distance_m")
+    avoidance_clearance_m = LaunchConfiguration("avoidance_clearance_m")
+    avoidance_lateral_offset_m = LaunchConfiguration("avoidance_lateral_offset_m")
+    avoidance_forward_offset_m = LaunchConfiguration("avoidance_forward_offset_m")
+    avoidance_speed_m_s = LaunchConfiguration("avoidance_speed_m_s")
+    obstacle_data_timeout_s = LaunchConfiguration("obstacle_data_timeout_s")
+    mission_file = LaunchConfiguration("mission_file")
+    mission_waypoints_ned = LaunchConfiguration("mission_waypoints_ned")
+    waypoints_topic = LaunchConfiguration("waypoints_topic")
     target_point_topic = LaunchConfiguration("target_point_topic")
     accept_runtime_target = LaunchConfiguration("accept_runtime_target")
 
@@ -37,6 +47,16 @@ def generate_launch_description():
         DeclareLaunchArgument("obstacle_abort_distance_m", default_value="1.0"),
         DeclareLaunchArgument("obstacle_hold_timeout_s", default_value="5.0"),
         DeclareLaunchArgument("enable_obstacle_hold", default_value="true"),
+        DeclareLaunchArgument("enable_local_avoidance", default_value="true"),
+        DeclareLaunchArgument("avoidance_trigger_distance_m", default_value="3.0"),
+        DeclareLaunchArgument("avoidance_clearance_m", default_value="2.0"),
+        DeclareLaunchArgument("avoidance_lateral_offset_m", default_value="1.5"),
+        DeclareLaunchArgument("avoidance_forward_offset_m", default_value="2.0"),
+        DeclareLaunchArgument("avoidance_speed_m_s", default_value="0.45"),
+        DeclareLaunchArgument("obstacle_data_timeout_s", default_value="1.0"),
+        DeclareLaunchArgument("mission_file", default_value=""),
+        DeclareLaunchArgument("mission_waypoints_ned", default_value=""),
+        DeclareLaunchArgument("waypoints_topic", default_value="/autonomy/waypoints_ned"),
         DeclareLaunchArgument("target_point_topic", default_value="/autonomy/target_ned"),
         DeclareLaunchArgument("accept_runtime_target", default_value="true"),
         Node(
@@ -55,10 +75,25 @@ def generate_launch_description():
                 "mission_timeout_s": mission_timeout_s,
                 "auto_rtl_after_finish": auto_rtl_after_finish,
                 "obstacle_distance_topic": obstacle_distance_topic,
+                "front_obstacle_distance_topic": "/perception/front_obstacle_distance",
+                "left_obstacle_distance_topic": "/perception/left_obstacle_distance",
+                "right_obstacle_distance_topic": "/perception/right_obstacle_distance",
+                "up_obstacle_distance_topic": "/perception/up_obstacle_distance",
+                "down_obstacle_distance_topic": "/perception/down_obstacle_distance",
                 "obstacle_stop_distance_m": obstacle_stop_distance_m,
                 "obstacle_abort_distance_m": obstacle_abort_distance_m,
                 "obstacle_hold_timeout_s": obstacle_hold_timeout_s,
                 "enable_obstacle_hold": enable_obstacle_hold,
+                "enable_local_avoidance": enable_local_avoidance,
+                "avoidance_trigger_distance_m": avoidance_trigger_distance_m,
+                "avoidance_clearance_m": avoidance_clearance_m,
+                "avoidance_lateral_offset_m": avoidance_lateral_offset_m,
+                "avoidance_forward_offset_m": avoidance_forward_offset_m,
+                "avoidance_speed_m_s": avoidance_speed_m_s,
+                "obstacle_data_timeout_s": obstacle_data_timeout_s,
+                "mission_file": mission_file,
+                "mission_waypoints_ned": mission_waypoints_ned,
+                "waypoints_topic": waypoints_topic,
                 "target_point_topic": target_point_topic,
                 "accept_runtime_target": accept_runtime_target,
             }],

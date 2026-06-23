@@ -1,0 +1,166 @@
+import math
+from typing import Tuple
+
+import rclpy
+from rclpy.executors import ExternalShutdownException
+from geometry_msgs.msg import PointStamped
+from nav_msgs.msg import Odometry
+from rclpy.node import Node
+from sensor_msgs.msg import PointCloud2
+
+
+Quaternion = Tuple[float, float, float, float]
+
+
+def _quat_multiply(a: Quaternion, b: Quaternion) -> Quaternion:
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    )
+
+
+def _quat_conjugate(q: Quaternion) -> Quaternion:
+    x, y, z, w = q
+    return (-x, -y, -z, w)
+
+
+def _quat_normalize(q: Quaternion) -> Quaternion:
+    x, y, z, w = q
+    norm = math.sqrt(x * x + y * y + z * z + w * w)
+    if norm <= 1e-9:
+        return (0.0, 0.0, 0.0, 1.0)
+    return (x / norm, y / norm, z / norm, w / norm)
+
+
+def _flu_to_frd_vector(x: float, y: float, z: float) -> Tuple[float, float, float]:
+    return (x, -y, -z)
+
+
+def _flu_to_frd_quaternion(q: Quaternion) -> Quaternion:
+    # Same 180 degree X-axis basis conversion on parent and child frames.
+    basis = (1.0, 0.0, 0.0, 0.0)
+    return _quat_normalize(_quat_multiply(_quat_multiply(basis, q), _quat_conjugate(basis)))
+
+
+class LioOdometryBridge(Node):
+    def __init__(self) -> None:
+        super().__init__("lio_odometry_bridge")
+
+        self.declare_parameter("input_odom_topic", "/Odometry")
+        self.declare_parameter("output_odom_topic", "/autonomy/lio_odometry")
+        self.declare_parameter("output_position_topic", "/autonomy/lio_position_ned")
+        self.declare_parameter("input_map_topic", "/Laser_map")
+        self.declare_parameter("output_map_topic", "/autonomy/local_map")
+        self.declare_parameter("input_registered_cloud_topic", "/cloud_registered")
+        self.declare_parameter("output_registered_cloud_topic", "/autonomy/cloud_registered")
+        self.declare_parameter("input_frame_id", "camera_init")
+        self.declare_parameter("output_frame_id", "ned")
+        self.declare_parameter("output_child_frame_id", "base_link_frd")
+
+        input_odom_topic = self.get_parameter("input_odom_topic").value
+        output_odom_topic = self.get_parameter("output_odom_topic").value
+        output_position_topic = self.get_parameter("output_position_topic").value
+        input_map_topic = self.get_parameter("input_map_topic").value
+        output_map_topic = self.get_parameter("output_map_topic").value
+        input_registered_cloud_topic = self.get_parameter("input_registered_cloud_topic").value
+        output_registered_cloud_topic = self.get_parameter("output_registered_cloud_topic").value
+
+        self._output_frame_id = self.get_parameter("output_frame_id").value
+        self._output_child_frame_id = self.get_parameter("output_child_frame_id").value
+
+        self._odom_pub = self.create_publisher(Odometry, output_odom_topic, 10)
+        self._position_pub = self.create_publisher(PointStamped, output_position_topic, 10)
+        self._map_pub = self.create_publisher(PointCloud2, output_map_topic, 10)
+        self._registered_cloud_pub = self.create_publisher(PointCloud2, output_registered_cloud_topic, 10)
+
+        self.create_subscription(Odometry, input_odom_topic, self._handle_odom, 10)
+        self.create_subscription(PointCloud2, input_map_topic, self._handle_map, 10)
+        self.create_subscription(PointCloud2, input_registered_cloud_topic, self._handle_registered_cloud, 10)
+
+        self.get_logger().info(
+            f"Bridging FAST-LIO2 odometry {input_odom_topic} -> {output_odom_topic}, "
+            f"map {input_map_topic} -> {output_map_topic}"
+        )
+
+    def _handle_odom(self, msg: Odometry) -> None:
+        odom = Odometry()
+        odom.header = msg.header
+        odom.header.frame_id = self._output_frame_id
+        odom.child_frame_id = self._output_child_frame_id
+
+        px, py, pz = _flu_to_frd_vector(
+            msg.pose.pose.position.x,
+            msg.pose.pose.position.y,
+            msg.pose.pose.position.z,
+        )
+        odom.pose.pose.position.x = px
+        odom.pose.pose.position.y = py
+        odom.pose.pose.position.z = pz
+
+        q = msg.pose.pose.orientation
+        qx, qy, qz, qw = _flu_to_frd_quaternion((q.x, q.y, q.z, q.w))
+        odom.pose.pose.orientation.x = qx
+        odom.pose.pose.orientation.y = qy
+        odom.pose.pose.orientation.z = qz
+        odom.pose.pose.orientation.w = qw
+        odom.pose.covariance = msg.pose.covariance
+
+        vx, vy, vz = _flu_to_frd_vector(
+            msg.twist.twist.linear.x,
+            msg.twist.twist.linear.y,
+            msg.twist.twist.linear.z,
+        )
+        wx, wy, wz = _flu_to_frd_vector(
+            msg.twist.twist.angular.x,
+            msg.twist.twist.angular.y,
+            msg.twist.twist.angular.z,
+        )
+        odom.twist.twist.linear.x = vx
+        odom.twist.twist.linear.y = vy
+        odom.twist.twist.linear.z = vz
+        odom.twist.twist.angular.x = wx
+        odom.twist.twist.angular.y = wy
+        odom.twist.twist.angular.z = wz
+        odom.twist.covariance = msg.twist.covariance
+
+        position = PointStamped()
+        position.header = odom.header
+        position.point.x = px
+        position.point.y = py
+        position.point.z = pz
+
+        self._odom_pub.publish(odom)
+        self._position_pub.publish(position)
+
+    def _handle_map(self, msg: PointCloud2) -> None:
+        relayed = PointCloud2()
+        relayed = msg
+        relayed.header.frame_id = self._output_frame_id
+        self._map_pub.publish(relayed)
+
+    def _handle_registered_cloud(self, msg: PointCloud2) -> None:
+        relayed = PointCloud2()
+        relayed = msg
+        relayed.header.frame_id = self._output_frame_id
+        self._registered_cloud_pub.publish(relayed)
+
+
+def main() -> None:
+    rclpy.init()
+    node = LioOdometryBridge()
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

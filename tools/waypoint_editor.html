@@ -1,0 +1,1274 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PX4 ROS2 Autonomy 航点编辑器 (rosbridge + 逐航点参数)</title>
+<style>
+  :root {
+    --bg: #1e1e2e;
+    --surface: #2a2a3e;
+    --border: #3a3a5e;
+    --text: #e0e0f0;
+    --text-dim: #8888aa;
+    --accent: #7c6ff0;
+    --accent-hover: #9a8fff;
+    --danger: #f05555;
+    --success: #55cc88;
+    --waypoint-color: #ffaa44;
+    --path-color: rgba(124, 111, 240, 0.6);
+    --grid-color: rgba(255,255,255,0.06);
+    --axis-color: rgba(255,255,255,0.2);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 20px;
+  }
+  .container {
+    max-width: 1500px;
+    width: 100%;
+  }
+  h1 {
+    font-size: 1.6rem;
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: #fff;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 0.9rem;
+    margin-bottom: 20px;
+  }
+  .header-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  .header-bar .left { display: flex; flex-direction: column; }
+  .header-bar .right { display: flex; align-items: center; gap: 10px; }
+
+  .ros-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.78rem;
+    padding: 4px 14px;
+    border-radius: 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .ros-status .dot {
+    width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0;
+  }
+  .ros-status .dot.connected { background: #55cc88; }
+  .ros-status .dot.disconnected { background: #f05555; }
+  .ros-status .dot.connecting { background: #ffaa44; animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .ros-status .label { color: var(--text-dim); }
+  #rosCoords { color: var(--accent); font-family: 'JetBrains Mono', monospace; font-size:0.78rem; }
+
+  .main-layout {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+  .canvas-wrapper {
+    flex: 1 1 700px;
+    min-width: 500px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    position: relative;
+  }
+  .canvas-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .canvas-toolbar label {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+  }
+  .canvas-toolbar input[type="range"] {
+    width: 80px;
+    vertical-align: middle;
+  }
+  .canvas-toolbar .zoom-val {
+    display: inline-block;
+    min-width: 36px;
+    text-align: right;
+    font-size: 0.85rem;
+    color: var(--accent);
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    background: #16162a;
+    border-radius: 8px;
+    cursor: crosshair;
+    touch-action: none;
+  }
+  .canvas-info {
+    margin-top: 8px;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .canvas-info kbd {
+    background: var(--bg);
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    font-size: 0.75rem;
+  }
+
+  .panel {
+    flex: 0 0 520px;
+    min-width: 400px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .panel-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+  }
+  .panel-section h3 {
+    font-size: 1rem;
+    font-weight: 500;
+    margin-bottom: 12px;
+    color: #fff;
+  }
+
+  .param-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .param-item {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .param-item label {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+  }
+  .param-item input, .param-item select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: var(--text);
+    font-size: 0.85rem;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .param-item input:focus, .param-item select:focus {
+    border-color: var(--accent);
+  }
+  .param-item input[type="number"] {
+    width: 100%;
+  }
+
+  .wp-table-wrap {
+    max-height: 300px;
+    overflow-y: auto;
+    overflow-x: auto;
+  }
+  .waypoint-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    min-width: 460px;
+  }
+  .waypoint-table th {
+    text-align: left;
+    color: var(--text-dim);
+    font-weight: 500;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 5px 4px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+    white-space: nowrap;
+  }
+  .waypoint-table td {
+    padding: 3px 4px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    vertical-align: middle;
+  }
+  .waypoint-table tr:last-child td {
+    border-bottom: none;
+  }
+  .waypoint-table tr:hover td {
+    background: rgba(124, 111, 240, 0.08);
+  }
+  .waypoint-table tr.wp-selected td {
+    background: rgba(124, 111, 240, 0.18);
+  }
+  .waypoint-table .wp-idx {
+    color: var(--accent);
+    font-weight: 600;
+    width: 24px;
+    text-align: center;
+    font-size: 0.8rem;
+  }
+  .waypoint-table .wp-coord {
+    font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+    font-size: 0.75rem;
+    color: var(--text);
+    white-space: nowrap;
+  }
+  .waypoint-table .wp-num-input {
+    background: var(--bg);
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 2px 4px;
+    color: var(--text);
+    font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+    font-size: 0.75rem;
+    width: 52px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .waypoint-table .wp-num-input:focus {
+    border-color: var(--accent);
+  }
+  .waypoint-table .wp-num-input:hover {
+    border-color: var(--border);
+  }
+  .wp-actions button {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 0.85rem;
+    padding: 2px 4px;
+    border-radius: 4px;
+    transition: color 0.2s, background 0.2s;
+  }
+  .wp-actions button:hover { background: rgba(255,255,255,0.08); }
+  .wp-actions .btn-up:hover { color: var(--accent); }
+  .wp-actions .btn-down:hover { color: var(--accent); }
+  .wp-actions .btn-del:hover { color: var(--danger); }
+
+  .btn {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 18px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .btn:hover { background: var(--accent-hover); }
+  .btn:active { transform: scale(0.97); }
+  .btn-outline {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+  .btn-outline:hover { border-color: var(--accent); color: var(--accent-hover); background: rgba(124,111,240,0.08); }
+  .btn-danger {
+    background: var(--danger);
+  }
+  .btn-danger:hover { background: #ff6666; }
+  .btn-success {
+    background: var(--success);
+    color: #000;
+  }
+  .btn-success:hover { background: #66dd99; }
+  .btn-sm { padding: 5px 12px; font-size: 0.8rem; }
+  .btn-group {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
+
+  #exportOutput {
+    margin-top: 12px;
+    background: #0d0d1a;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    max-height: 260px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    color: #bbccff;
+    display: none;
+  }
+  #exportOutput .copy-hint {
+    float: right;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  #exportOutput .copy-hint:hover { color: var(--accent); }
+
+  .toast {
+    position: fixed;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 24px;
+    font-size: 0.9rem;
+    color: var(--text);
+    box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+    opacity: 0;
+    transition: opacity 0.4s;
+    z-index: 999;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  @media (max-width: 960px) {
+    .main-layout { flex-direction: column; }
+    .canvas-wrapper { min-width: unset; }
+    .panel { flex: 1 1 auto; min-width: unset; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <!-- Header -->
+  <div class="header-bar">
+    <div class="left">
+      <h1>🗺️ PX4 ROS2 Autonomy 航点编辑器</h1>
+      <div class="subtitle">点击绘制航点 · 每个航点可独立设置高度/速度/停留时间 · 导出 YAML 自动执行 · <span id="rosCoords">飞机: —, —</span></div>
+    </div>
+    <div class="right">
+      <span class="ros-status">
+        <span class="dot disconnected" id="rosDot"></span>
+        <span class="label" id="rosLabel">未连接</span>
+      </span>
+      <button class="btn btn-sm btn-outline" id="btnRosConnect">🔗 连接 rosbridge</button>
+    </div>
+  </div>
+
+  <div class="main-layout">
+    <!-- Canvas -->
+    <div class="canvas-wrapper">
+      <div class="canvas-toolbar">
+        <div>
+          <label>网格尺寸: <span id="gridSizeLabel">1.0</span> m</label>
+          <input type="range" id="gridSlider" min="0.25" max="5" step="0.25" value="1.0">
+        </div>
+        <div>
+          <label>缩放: <span class="zoom-val" id="zoomLabel">1.0</span></label>
+          <input type="range" id="zoomSlider" min="0.2" max="3.0" step="0.05" value="1.0">
+        </div>
+        <div>
+          <button class="btn btn-sm btn-outline" id="btnResetView">⟲ 复位视角</button>
+          <button class="btn btn-sm btn-outline" id="btnClearAll">✕ 清空航点</button>
+        </div>
+      </div>
+      <canvas id="mapCanvas" width="800" height="800"></canvas>
+      <div class="canvas-info">
+        <span>🖱 点击添加 · 点击已有航点删除 · 表格中编辑独立参数 · <kbd>rosbridge 实时显示飞机位置</kbd></span>
+        <span>坐标: N=<span id="cursorN">—</span> E=<span id="cursorE">—</span></span>
+      </div>
+    </div>
+
+    <!-- Right Panel -->
+    <div class="panel">
+      <!-- Global Default Parameters -->
+      <div class="panel-section">
+        <h3>⚙️ 全局默认参数 <span style="font-weight:400;color:var(--text-dim);font-size:0.8rem;">(新航点继承，之后可逐航点修改)</span></h3>
+        <div class="param-grid">
+          <div class="param-item">
+            <label>默认高度 Z (m, 向下为负)</label>
+            <input type="number" id="paramZ" value="-1.5" step="0.5">
+          </div>
+          <div class="param-item">
+            <label>默认速度 (m/s)</label>
+            <input type="number" id="paramSpeed" value="0.5" step="0.1" min="0.1">
+          </div>
+          <div class="param-item">
+            <label>默认停留 (s)</label>
+            <input type="number" id="paramHoldTime" value="0" step="0.5" min="0">
+          </div>
+          <div class="param-item">
+            <label>接受半径 (m)</label>
+            <input type="number" id="paramAcceptRadius" value="0.35" step="0.05" min="0.1">
+          </div>
+          <div class="param-item">
+            <label>超时 (s)</label>
+            <input type="number" id="paramTimeout" value="180" step="10" min="10">
+          </div>
+        </div>
+        <div class="param-grid" style="margin-top:10px">
+          <div class="param-item">
+            <label>启用局部避障</label>
+            <select id="paramAvoid">
+              <option value="true">是</option>
+              <option value="false">否</option>
+            </select>
+          </div>
+          <div class="param-item">
+            <label>触发距离 (m)</label>
+            <input type="number" id="paramAvoidTrigger" value="3.5" step="0.1">
+          </div>
+        </div>
+      </div>
+
+      <!-- Waypoint List -->
+      <div class="panel-section" style="flex:1;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <h3 style="margin:0;">📍 航点列表 <span id="wpCount" style="font-weight:400;color:var(--text-dim)">(0)</span></h3>
+          <div>
+            <button class="btn btn-sm btn-outline" id="btnAddExample">➕ 示例</button>
+          </div>
+        </div>
+        <div class="wp-table-wrap">
+          <table class="waypoint-table" id="wpTable">
+            <thead><tr>
+              <th style="width:24px;">#</th>
+              <th>N (x)</th>
+              <th>E (y)</th>
+              <th title="航点独立高度（覆盖全局默认值）">Z ⚡</th>
+              <th title="航点独立速度（覆盖全局默认值）">速度</th>
+              <th title="航点独立停留秒数">停留</th>
+              <th style="width:70px;"></th>
+            </tr></thead>
+            <tbody id="wpTbody">
+            </tbody>
+          </table>
+        </div>
+        <div style="margin-top:8px; font-size:0.75rem; color:var(--text-dim);" id="totalDistDisplay">
+          总距离: — m
+        </div>
+      </div>
+
+      <!-- Export -->
+      <div class="panel-section">
+        <div class="btn-group">
+          <button class="btn btn-success" id="btnExportYaml">📄 导出 YAML</button>
+          <button class="btn btn-outline" id="btnExportEnv">📝 导出 Env</button>
+          <button class="btn btn-outline" id="btnCopyCmd">📋 复制 ros2 topic</button>
+          <button class="btn btn-outline" id="btnDownloadFile">💾 下载文件</button>
+        </div>
+        <div id="exportOutput"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js"></script>
+<script>
+// ====================================================================
+//  State
+// ====================================================================
+const state = {
+  waypoints: [],  // [{x, y, z, speed, holdTime}]
+  offsetX: 0,
+  offsetY: 0,
+  zoom: 1.0,
+  gridSize: 1.0,
+  dragging: false,
+  dragStartX: 0,
+  dragStartY: 0,
+  panStartX: 0,
+  panStartY: 0,
+  droneNed: null,
+  rosConnected: false,
+  ros: null,
+  rosReconnectTimer: null,
+};
+
+// ====================================================================
+//  DOM refs
+// ====================================================================
+const canvas = document.getElementById('mapCanvas');
+const ctx = canvas.getContext('2d');
+const zoomSlider = document.getElementById('zoomSlider');
+const zoomLabel = document.getElementById('zoomLabel');
+const gridSlider = document.getElementById('gridSlider');
+const gridSizeLabel = document.getElementById('gridSizeLabel');
+const cursorN = document.getElementById('cursorN');
+const cursorE = document.getElementById('cursorE');
+const wpTbody = document.getElementById('wpTbody');
+const wpCount = document.getElementById('wpCount');
+const totalDistDisplay = document.getElementById('totalDistDisplay');
+const exportOutput = document.getElementById('exportOutput');
+const toastEl = document.getElementById('toast');
+let toastTimer = null;
+
+// Inputs
+const paramZ = document.getElementById('paramZ');
+const paramSpeed = document.getElementById('paramSpeed');
+const paramHoldTime = document.getElementById('paramHoldTime');
+const paramAcceptRadius = document.getElementById('paramAcceptRadius');
+const paramTimeout = document.getElementById('paramTimeout');
+const paramAvoid = document.getElementById('paramAvoid');
+const paramAvoidTrigger = document.getElementById('paramAvoidTrigger');
+
+// rosbridge UI
+const rosDot = document.getElementById('rosDot');
+const rosLabel = document.getElementById('rosLabel');
+const rosCoords = document.getElementById('rosCoords');
+const btnRosConnect = document.getElementById('btnRosConnect');
+
+// ====================================================================
+//  Helpers
+// ====================================================================
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2200);
+}
+
+// Convert canvas pixel coords → NED meters
+function canvasToNed(cx, cy) {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = canvas.width / rect.width;
+  const w = canvas.width;
+  const h = canvas.height;
+  const scale = state.zoom * 50;
+  const nx = (cx - w/2 - state.offsetX) / scale;
+  const ny = -(cy - h/2 - state.offsetY) / scale;
+  return { x: ny, y: nx };
+}
+
+function nedToCanvas(nedX, nedY) {
+  const w = canvas.width;
+  const h = canvas.height;
+  const scale = state.zoom * 50;
+  const cx = nedY * scale + w/2 + state.offsetX;
+  const cy = -nedX * scale + h/2 + state.offsetY;
+  return { x: cx, y: cy };
+}
+
+function distBetween(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+// Get the global default values for new waypoints
+function getGlobalDefaults() {
+  return {
+    z: parseFloat(paramZ.value) || -1.5,
+    speed: parseFloat(paramSpeed.value) || 0.5,
+    holdTime: parseFloat(paramHoldTime.value) || 0,
+  };
+}
+
+// Check if a waypoint has any non-default (custom) values
+function wpHasCustom(wp) {
+  const def = getGlobalDefaults();
+  return Math.abs(wp.z - def.z) > 0.01 ||
+         Math.abs(wp.speed - def.speed) > 0.01 ||
+         Math.abs(wp.holdTime - def.holdTime) > 0.01;
+}
+
+// ====================================================================
+//  rosbridge connection
+// ====================================================================
+function setRosStatus(status, msg) {
+  rosDot.className = 'dot';
+  if (status === 'connected') {
+    rosDot.classList.add('connected');
+    rosLabel.textContent = msg || '已连接';
+    state.rosConnected = true;
+    btnRosConnect.textContent = '🔌 断开';
+  } else if (status === 'connecting') {
+    rosDot.classList.add('connecting');
+    rosLabel.textContent = msg || '连接中…';
+    state.rosConnected = false;
+    btnRosConnect.textContent = '🔗 连接 rosbridge';
+  } else {
+    rosDot.classList.add('disconnected');
+    rosLabel.textContent = msg || '未连接';
+    state.rosConnected = false;
+    state.droneNed = null;
+    btnRosConnect.textContent = '🔗 连接 rosbridge';
+    draw();
+  }
+}
+
+function connectRosbridge() {
+  if (state.ros && state.rosConnected) {
+    state.ros.close();
+    state.ros = null;
+    setRosStatus('disconnected', '已断开');
+    toast('已断开 rosbridge');
+    return;
+  }
+  setRosStatus('connecting');
+  const ros = new ROSLIB.Ros({ url: 'ws://localhost:9090' });
+  ros.on('connection', () => {
+    setRosStatus('connected', '已连接');
+    toast('已连接 rosbridge ws://localhost:9090');
+    subscribeTopics(ros);
+  });
+  ros.on('error', (err) => {
+    console.error('rosbridge error:', err);
+    setRosStatus('disconnected', '连接失败');
+    toast('rosbridge 连接失败: ' + (err.message || err));
+  });
+  ros.on('close', () => {
+    if (state.rosConnected) {
+      setRosStatus('disconnected', '连接已关闭');
+      toast('rosbridge 连接已关闭');
+    } else {
+      setRosStatus('disconnected', '连接失败');
+    }
+    state.droneNed = null;
+    draw();
+  });
+  state.ros = ros;
+}
+
+function subscribeTopics(ros) {
+  const posTopic = new ROSLIB.Topic({
+    ros: ros,
+    name: '/fmu/out/vehicle_local_position_v1',
+    messageType: 'px4_msgs/VehicleLocalPositionV1'
+  });
+  posTopic.subscribe((msg) => {
+    state.droneNed = { x: msg.x, y: msg.y };
+    rosCoords.textContent = `飞机: ${msg.x.toFixed(2)}, ${msg.y.toFixed(2)}`;
+    draw();
+  });
+  const autPose = new ROSLIB.Topic({
+    ros: ros,
+    name: '/autonomy/current_pose',
+    messageType: 'geometry_msgs/PoseStamped'
+  });
+  autPose.subscribe((msg) => {
+    if (!state.droneNed) {
+      state.droneNed = { x: msg.pose.position.x, y: msg.pose.position.y };
+      rosCoords.textContent = `飞机: ${msg.pose.position.x.toFixed(2)}, ${msg.pose.position.y.toFixed(2)}`;
+      draw();
+    }
+  });
+}
+
+btnRosConnect.addEventListener('click', connectRosbridge);
+
+window.addEventListener('load', () => {
+  state.rosReconnectTimer = setTimeout(() => connectRosbridge(), 1500);
+});
+
+// ====================================================================
+//  Drawing
+// ====================================================================
+function draw() {
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  const scale = state.zoom * 50;
+
+  // ---- Grid ----
+  const gridPx = state.gridSize * scale;
+  if (gridPx > 5) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 1;
+    const offX = state.offsetX % gridPx;
+    const offY = state.offsetY % gridPx;
+    for (let x = offX; x < w; x += gridPx) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    }
+    for (let y = offY; y < h; y += gridPx) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
+  }
+
+  // ---- Axes ----
+  const origin = nedToCanvas(0, 0);
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(0, origin.y); ctx.lineTo(w, origin.y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(origin.x, 0); ctx.lineTo(origin.x, h); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  ctx.font = '11px sans-serif';
+  ctx.fillText('E →', w - 30, origin.y - 6);
+  ctx.fillText('N ↑', origin.x + 6, 16);
+
+  // ---- Waypoint path ----
+  if (state.waypoints.length >= 2) {
+    ctx.strokeStyle = 'rgba(124, 111, 240, 0.5)';
+    ctx.lineWidth = 2.5;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    for (let i = 0; i < state.waypoints.length; i++) {
+      const p = nedToCanvas(state.waypoints[i].x, state.waypoints[i].y);
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // ---- Waypoints ----
+  for (let i = 0; i < state.waypoints.length; i++) {
+    const wp = state.waypoints[i];
+    const p = nedToCanvas(wp.x, wp.y);
+    const radius = 7 + Math.min(state.zoom * 2, 6);
+    const isFirst = i === 0;
+    const isLast = i === state.waypoints.length - 1;
+
+    // Glow
+    const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius * 2.5);
+    grad.addColorStop(0, 'rgba(255, 170, 68, 0.25)');
+    grad.addColorStop(1, 'rgba(255, 170, 68, 0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(p.x, p.y, radius * 2.5, 0, Math.PI * 2); ctx.fill();
+
+    // Circle
+    ctx.fillStyle = isFirst ? '#55cc88' : (isLast ? '#ff6688' : '#ffaa44');
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Index label
+    ctx.fillStyle = '#fff';
+    ctx.font = `bold ${Math.max(10, 11 + state.zoom * 0.5)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(i + 1, p.x, p.y);
+
+    // Coordinate label
+    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    const label = `(${wp.x.toFixed(1)}, ${wp.y.toFixed(1)})`;
+    ctx.fillText(label, p.x + radius + 6, p.y - 4);
+
+    // Custom settings indicator (if different from defaults)
+    if (wpHasCustom(wp)) {
+      ctx.fillStyle = 'rgba(124, 111, 240, 0.7)';
+      ctx.font = '9px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      let extras = [];
+      const def = getGlobalDefaults();
+      if (Math.abs(wp.z - def.z) > 0.01) extras.push(`Z:${wp.z.toFixed(1)}`);
+      if (Math.abs(wp.speed - def.speed) > 0.01) extras.push(`v:${wp.speed.toFixed(1)}`);
+      if (Math.abs(wp.holdTime - def.holdTime) > 0.01) extras.push(`停:${wp.holdTime.toFixed(0)}s`);
+      if (extras.length) ctx.fillText(extras.join(' '), p.x + radius + 6, p.y + 6);
+    }
+
+    // Start/End markers
+    if (isFirst) {
+      ctx.fillStyle = 'rgba(85, 204, 136, 0.5)';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText('START', p.x + radius + 6, p.y + 4);
+    }
+    if (isLast && state.waypoints.length > 1) {
+      ctx.fillStyle = 'rgba(255, 102, 136, 0.5)';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText('END', p.x + radius + 6, p.y + 4);
+    }
+  }
+
+  // ---- Drone position ----
+  if (state.droneNed) {
+    const dp = nedToCanvas(state.droneNed.x, state.droneNed.y);
+    const dgrad = ctx.createRadialGradient(dp.x, dp.y, 0, dp.x, dp.y, 30);
+    dgrad.addColorStop(0, 'rgba(0, 200, 255, 0.3)');
+    dgrad.addColorStop(1, 'rgba(0, 200, 255, 0)');
+    ctx.fillStyle = dgrad;
+    ctx.beginPath(); ctx.arc(dp.x, dp.y, 30, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#00ccff';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(dp.x, dp.y, 8, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(dp.x - 12, dp.y); ctx.lineTo(dp.x + 12, dp.y);
+    ctx.moveTo(dp.x, dp.y - 12); ctx.lineTo(dp.x, dp.y + 12);
+    ctx.stroke();
+    ctx.fillStyle = '#00ccff';
+    ctx.beginPath();
+    ctx.moveTo(dp.x, dp.y - 16);
+    ctx.lineTo(dp.x - 6, dp.y - 8);
+    ctx.lineTo(dp.x + 6, dp.y - 8);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#00ccff';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(`✈ ${state.droneNed.x.toFixed(2)}, ${state.droneNed.y.toFixed(2)}`, dp.x + 14, dp.y - 4);
+  }
+
+  if (state.waypoints.length === 0 && !state.droneNed) {
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('点击画布添加航点', w/2, h/2 - 20);
+  }
+
+  updateTable();
+  updateStats();
+}
+
+// ====================================================================
+//  Waypoint CRUD
+// ====================================================================
+function addWaypoint(x, y) {
+  const def = getGlobalDefaults();
+  state.waypoints.push({ x, y, z: def.z, speed: def.speed, holdTime: def.holdTime });
+  draw();
+}
+
+function removeWaypoint(index) {
+  if (index >= 0 && index < state.waypoints.length) {
+    state.waypoints.splice(index, 1);
+    draw();
+  }
+}
+
+function moveWaypoint(from, to) {
+  if (to < 0 || to >= state.waypoints.length) return;
+  const [item] = state.waypoints.splice(from, 1);
+  state.waypoints.splice(to, 0, item);
+  draw();
+}
+
+function updateWaypoint(index, field, value) {
+  if (index >= 0 && index < state.waypoints.length) {
+    state.waypoints[index][field] = value;
+    draw();
+  }
+}
+
+function clearAllWaypoints() {
+  if (state.waypoints.length === 0) return;
+  if (!confirm('确定清空所有航点？')) return;
+  state.waypoints = [];
+  draw();
+  toast('已清空所有航点');
+}
+
+function loadExample() {
+  const def = getGlobalDefaults();
+  state.waypoints = [
+    { x: 0, y: 0, z: def.z, speed: def.speed, holdTime: def.holdTime },
+    { x: 3, y: 0, z: def.z, speed: def.speed, holdTime: def.holdTime },
+    { x: 3, y: 3, z: def.z, speed: 0.3, holdTime: 2.0 },   // 示例：慢速+停留
+    { x: 0, y: 3, z: def.z - 0.5, speed: def.speed, holdTime: def.holdTime },  // 示例：不同高度
+    { x: 0, y: 0, z: def.z, speed: def.speed, holdTime: def.holdTime },
+  ];
+  draw();
+  toast('已加载示例航点（含独立参数演示）');
+}
+
+// ====================================================================
+//  Table with per-waypoint editable fields
+// ====================================================================
+function updateTable() {
+  const tbody = wpTbody;
+  tbody.innerHTML = '';
+  for (let i = 0; i < state.waypoints.length; i++) {
+    const wp = state.waypoints[i];
+    const hasCustom = wpHasCustom(wp);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="wp-idx">${i + 1}</td>
+      <td class="wp-coord">${wp.x.toFixed(2)}</td>
+      <td class="wp-coord">${wp.y.toFixed(2)}</td>
+      <td>
+        <input class="wp-num-input" type="number" step="0.5"
+               value="${wp.z.toFixed(2)}"
+               data-wp-field="z" data-wp-idx="${i}"
+               style="${hasCustom && Math.abs(wp.z - getGlobalDefaults().z) > 0.01 ? 'border-color:var(--accent);' : ''}"
+               title="独立高度（覆盖全局默认值）">
+      </td>
+      <td>
+        <input class="wp-num-input" type="number" step="0.1" min="0.1"
+               value="${wp.speed.toFixed(1)}"
+               data-wp-field="speed" data-wp-idx="${i}"
+               style="${hasCustom && Math.abs(wp.speed - getGlobalDefaults().speed) > 0.01 ? 'border-color:var(--accent);' : ''}"
+               title="独立速度（覆盖全局默认值）">
+      </td>
+      <td>
+        <input class="wp-num-input" type="number" step="0.5" min="0"
+               value="${wp.holdTime.toFixed(1)}"
+               data-wp-field="holdTime" data-wp-idx="${i}"
+               style="${hasCustom && Math.abs(wp.holdTime - getGlobalDefaults().holdTime) > 0.01 ? 'border-color:var(--accent);' : ''}"
+               title="停留时间（秒）">
+      </td>
+      <td class="wp-actions" style="white-space:nowrap;">
+        <button class="btn-up" data-i="${i}" title="上移">↑</button>
+        <button class="btn-down" data-i="${i}" title="下移">↓</button>
+        <button class="btn-del" data-i="${i}" title="删除">✕</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  }
+  wpCount.textContent = `(${state.waypoints.length})`;
+
+  // Bind inline input changes
+  tbody.querySelectorAll('.wp-num-input').forEach(inp => {
+    inp.addEventListener('input', () => {
+      const idx = parseInt(inp.dataset.wpIdx);
+      const field = inp.dataset.wpField;
+      const val = parseFloat(inp.value);
+      if (!isNaN(val) && idx >= 0 && idx < state.waypoints.length) {
+        state.waypoints[idx][field] = val;
+        updateStats();
+        draw(); // re-draw to update canvas custom labels + color hints
+      }
+    });
+  });
+
+  tbody.querySelectorAll('.btn-up').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const i = parseInt(btn.dataset.i);
+      if (i > 0) moveWaypoint(i, i - 1);
+    });
+  });
+  tbody.querySelectorAll('.btn-down').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const i = parseInt(btn.dataset.i);
+      if (i < state.waypoints.length - 1) moveWaypoint(i, i + 1);
+    });
+  });
+  tbody.querySelectorAll('.btn-del').forEach(btn => {
+    btn.addEventListener('click', () => {
+      removeWaypoint(parseInt(btn.dataset.i));
+    });
+  });
+}
+
+function updateStats() {
+  let total = 0;
+  for (let i = 1; i < state.waypoints.length; i++) {
+    total += distBetween(state.waypoints[i-1], state.waypoints[i]);
+  }
+  totalDistDisplay.textContent = `总距离: ${total.toFixed(2)} m  ·  航点: ${state.waypoints.length}`;
+}
+
+// ====================================================================
+//  Canvas events
+// ====================================================================
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = canvas.width / rect.width;
+  const cx = (e.clientX - rect.left) * dpr;
+  const cy = (e.clientY - rect.top) * dpr;
+  const ned = canvasToNed(cx, cy);
+
+  for (let i = 0; i < state.waypoints.length; i++) {
+    const p = nedToCanvas(state.waypoints[i].x, state.waypoints[i].y);
+    const pxDist = Math.hypot(cx - p.x, cy - p.y);
+    if (pxDist < 16) {
+      removeWaypoint(i);
+      toast(`删除航点 #${i + 1}`);
+      return;
+    }
+  }
+
+  addWaypoint(parseFloat(ned.x.toFixed(2)), parseFloat(ned.y.toFixed(2)));
+  toast(`添加航点 #${state.waypoints.length}`);
+});
+
+// Pan with middle mouse or right drag
+canvas.addEventListener('mousedown', (e) => {
+  if (e.button === 1 || e.button === 2) {
+    state.dragging = true;
+    state.dragStartX = e.clientX;
+    state.dragStartY = e.clientY;
+    state.panStartX = state.offsetX;
+    state.panStartY = state.offsetY;
+    e.preventDefault();
+  }
+});
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = canvas.width / rect.width;
+  const cx = (e.clientX - rect.left) * dpr;
+  const cy = (e.clientY - rect.top) * dpr;
+  const ned = canvasToNed(cx, cy);
+  cursorN.textContent = ned.x.toFixed(2);
+  cursorE.textContent = ned.y.toFixed(2);
+
+  if (state.dragging) {
+    const dx = (e.clientX - state.dragStartX);
+    const dy = (e.clientY - state.dragStartY);
+    state.offsetX = state.panStartX + dx;
+    state.offsetY = state.panStartY + dy;
+    draw();
+  }
+});
+window.addEventListener('mouseup', () => { state.dragging = false; });
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? -0.08 : 0.08;
+  state.zoom = Math.max(0.2, Math.min(3.0, state.zoom + delta));
+  zoomSlider.value = state.zoom;
+  zoomLabel.textContent = state.zoom.toFixed(2);
+  draw();
+});
+
+// Touch
+let touchStartX = 0, touchStartY = 0, touchPanX = 0, touchPanY = 0, touchDist = 0;
+canvas.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 1) {
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+    touchPanX = state.offsetX;
+    touchPanY = state.offsetY;
+  } else if (e.touches.length === 2) {
+    touchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+  }
+}, { passive: true });
+canvas.addEventListener('touchmove', (e) => {
+  if (e.touches.length === 1 && !e.target.closest('.wp-actions')) {
+    const dx = e.touches[0].clientX - touchStartX;
+    const dy = e.touches[0].clientY - touchStartY;
+    state.offsetX = touchPanX + dx;
+    state.offsetY = touchPanY + dy;
+    draw();
+  } else if (e.touches.length === 2) {
+    const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+    const s = d / touchDist;
+    state.zoom = Math.max(0.2, Math.min(3.0, state.zoom * s));
+    zoomSlider.value = state.zoom;
+    zoomLabel.textContent = state.zoom.toFixed(2);
+    touchDist = d;
+    draw();
+  }
+}, { passive: true });
+canvas.addEventListener('touchend', (e) => {
+  if (e.changedTouches.length === 1 && !state.dragging) {
+    const touch = e.changedTouches[0];
+    const rect = canvas.getBoundingClientRect();
+    const dpr = canvas.width / rect.width;
+    const cx = (touch.clientX - rect.left) * dpr;
+    const cy = (touch.clientY - rect.top) * dpr;
+    const ned = canvasToNed(cx, cy);
+    for (let i = 0; i < state.waypoints.length; i++) {
+      const p = nedToCanvas(state.waypoints[i].x, state.waypoints[i].y);
+      if (Math.hypot(cx - p.x, cy - p.y) < 20) {
+        removeWaypoint(i);
+        toast(`删除航点 #${i + 1}`);
+        return;
+      }
+    }
+    addWaypoint(parseFloat(ned.x.toFixed(2)), parseFloat(ned.y.toFixed(2)));
+  }
+});
+
+// ====================================================================
+//  Export: YAML (with per-waypoint parameter overrides)
+// ====================================================================
+function generateYaml() {
+  const def = getGlobalDefaults();
+  const accRad = parseFloat(paramAcceptRadius.value) || 0.35;
+  const timeout = parseFloat(paramTimeout.value) || 180;
+  const avoid = paramAvoid.value === 'true';
+  const avoidTrig = parseFloat(paramAvoidTrigger.value) || 3.5;
+
+  const lines = [];
+  lines.push('# PX4 ROS2 Autonomy 多航点航线文件');
+  lines.push('# 由航点编辑器生成');
+  lines.push('');
+  lines.push(`mission_altitude_m: ${Math.abs(def.z).toFixed(1)}`);
+  lines.push(`max_horizontal_velocity_m_s: ${def.speed.toFixed(1)}`);
+  lines.push(`acceptance_radius_m: ${accRad.toFixed(2)}`);
+  lines.push(`mission_timeout_s: ${timeout.toFixed(0)}`);
+  lines.push('');
+  lines.push(`enable_local_avoidance: ${avoid}`);
+  lines.push(`avoidance_trigger_distance_m: ${avoidTrig.toFixed(1)}`);
+  lines.push(`avoidance_clearance_m: 2.0`);
+  lines.push(`avoidance_lateral_offset_m: 1.5`);
+  lines.push(`avoidance_forward_offset_m: 2.0`);
+  lines.push(`avoidance_speed_m_s: 0.35`);
+  lines.push('');
+  lines.push('waypoints:');
+  for (const wp of state.waypoints) {
+    // Only include per-waypoint overrides if different from defaults
+    const parts = [`x: ${wp.x.toFixed(2)}`, `y: ${wp.y.toFixed(2)}`, `z: ${wp.z.toFixed(2)}`];
+    if (Math.abs(wp.speed - def.speed) > 0.01) parts.push(`speed: ${wp.speed.toFixed(1)}`);
+    if (Math.abs(wp.holdTime - def.holdTime) > 0.01) parts.push(`hold_time: ${wp.holdTime.toFixed(1)}`);
+    lines.push(`  - {${parts.join(', ')}}`);
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+function generateEnv() {
+  const z = parseFloat(paramZ.value) || -1.5;
+  const speed = parseFloat(paramSpeed.value) || 0.5;
+  const accRad = parseFloat(paramAcceptRadius.value) || 0.35;
+  const timeout = parseFloat(paramTimeout.value) || 180;
+  const avoid = paramAvoid.value === 'true';
+  const avoidTrig = parseFloat(paramAvoidTrigger.value) || 3.5;
+
+  const wpStr = state.waypoints.map(wp =>
+    `${wp.x.toFixed(2)} ${wp.y.toFixed(2)} ${wp.z.toFixed(2)}`
+  ).join('; ');
+
+  const lines = [];
+  lines.push('# PX4 ROS2 Autonomy 多航点航线文件 (Env 格式)');
+  lines.push('# 由航点编辑器生成');
+  lines.push('');
+  lines.push(`MISSION_WAYPOINTS_NED='${wpStr}'`);
+  lines.push(`MISSION_ALTITUDE_M=${Math.abs(z).toFixed(1)}`);
+  lines.push(`MAX_HORIZONTAL_VELOCITY_M_S=${speed.toFixed(1)}`);
+  lines.push(`MISSION_TIMEOUT_S=${timeout.toFixed(0)}`);
+  lines.push(`ACCEPTANCE_RADIUS_M=${accRad.toFixed(2)}`);
+  lines.push('');
+  lines.push(`ENABLE_LOCAL_AVOIDANCE=${avoid}`);
+  lines.push(`AVOIDANCE_TRIGGER_DISTANCE_M=${avoidTrig.toFixed(1)}`);
+  lines.push(`AVOIDANCE_CLEARANCE_M=2.0`);
+  lines.push(`AVOIDANCE_LATERAL_OFFSET_M=1.5`);
+  lines.push(`AVOIDANCE_FORWARD_OFFSET_M=2.0`);
+  lines.push(`AVOIDANCE_SPEED_M_S=0.35`);
+  lines.push('');
+  return lines.join('\n');
+}
+
+function generateRosCmd() {
+  const poses = state.waypoints.map(wp =>
+    `    - position: {x: ${wp.x.toFixed(2)}, y: ${wp.y.toFixed(2)}, z: ${wp.z.toFixed(2)}}`
+  ).join('\n');
+  return `source /opt/ros/humble/setup.bash\nsource /home/p/px4_ros2_ws/install/setup.bash\n\nros2 topic pub --once /autonomy/waypoints_ned geometry_msgs/msg/PoseArray "\nposes:\n${poses}\n"`;
+}
+
+// ====================================================================
+//  UI buttons
+// ====================================================================
+function showExport(content, label) {
+  exportOutput.style.display = 'block';
+  exportOutput.innerHTML = `<span class="copy-hint" onclick="copyExportContent()">📋 复制</span>${label}\n\n${content}`;
+  exportOutput._content = content;
+}
+
+window.copyExportContent = function() {
+  const content = exportOutput._content || '';
+  navigator.clipboard.writeText(content).then(() => toast('已复制到剪贴板')).catch(() => toast('复制失败'));
+};
+
+document.getElementById('btnExportYaml').addEventListener('click', () => {
+  if (state.waypoints.length === 0) { toast('请先添加航点'); return; }
+  const yaml = generateYaml();
+  showExport(yaml, '📄 YAML 格式');
+});
+
+document.getElementById('btnExportEnv').addEventListener('click', () => {
+  if (state.waypoints.length === 0) { toast('请先添加航点'); return; }
+  const env = generateEnv();
+  showExport(env, '📝 Env 格式');
+});
+
+document.getElementById('btnCopyCmd').addEventListener('click', () => {
+  if (state.waypoints.length === 0) { toast('请先添加航点'); return; }
+  const cmd = generateRosCmd();
+  showExport(cmd, '📋 ROS2 Topic 命令');
+});
+
+document.getElementById('btnDownloadFile').addEventListener('click', () => {
+  if (state.waypoints.length === 0) { toast('请先添加航点'); return; }
+  const yaml = generateYaml();
+  const blob = new Blob([yaml], { type: 'text/yaml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'mission_waypoints.yaml';
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('已下载 mission_waypoints.yaml');
+});
+
+document.getElementById('btnClearAll').addEventListener('click', clearAllWaypoints);
+document.getElementById('btnAddExample').addEventListener('click', loadExample);
+document.getElementById('btnResetView').addEventListener('click', () => {
+  state.offsetX = 0;
+  state.offsetY = 0;
+  state.zoom = 1.0;
+  zoomSlider.value = 1.0;
+  zoomLabel.textContent = '1.00';
+  draw();
+});
+
+zoomSlider.addEventListener('input', () => {
+  state.zoom = parseFloat(zoomSlider.value);
+  zoomLabel.textContent = state.zoom.toFixed(2);
+  draw();
+});
+
+gridSlider.addEventListener('input', () => {
+  state.gridSize = parseFloat(gridSlider.value);
+  gridSizeLabel.textContent = state.gridSize.toFixed(2);
+  draw();
+});
+
+// ====================================================================
+//  Auto-update table when global defaults change (to refresh custom indicators)
+// ====================================================================
+[paramZ, paramSpeed, paramHoldTime].forEach(inp => {
+  inp.addEventListener('change', draw);
+  inp.addEventListener('input', draw);
+});
+
+// ====================================================================
+//  Init
+// ====================================================================
+loadExample();
+
+function resizeCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  draw();
+}
+window.addEventListener('resize', resizeCanvas);
+setTimeout(resizeCanvas, 100);
+</script>
+</body>
+</html>
