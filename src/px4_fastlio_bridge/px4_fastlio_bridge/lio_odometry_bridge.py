@@ -48,6 +48,17 @@ def _flu_to_frd_quaternion(q: Quaternion) -> Quaternion:
     return _quat_normalize(_quat_multiply(_quat_multiply(basis, q), _quat_conjugate(basis)))
 
 
+def _enu_to_ned_vector(x: float, y: float, z: float) -> Tuple[float, float, float]:
+    return (y, x, -z)
+
+
+def _enu_flu_to_ned_frd_quaternion(q: Quaternion) -> Quaternion:
+    half_sqrt2 = math.sqrt(0.5)
+    q_enu_to_ned = (half_sqrt2, half_sqrt2, 0.0, 0.0)
+    q_frd_to_flu = (1.0, 0.0, 0.0, 0.0)
+    return _quat_normalize(_quat_multiply(_quat_multiply(q_enu_to_ned, q), q_frd_to_flu))
+
+
 class LioOdometryBridge(Node):
     def __init__(self) -> None:
         super().__init__("lio_odometry_bridge")
@@ -108,7 +119,7 @@ class LioOdometryBridge(Node):
         odom.header.frame_id = self._output_frame_id
         odom.child_frame_id = self._output_child_frame_id
 
-        px, py, pz = _flu_to_frd_vector(
+        px, py, pz = _enu_to_ned_vector(
             msg.pose.pose.position.x,
             msg.pose.pose.position.y,
             msg.pose.pose.position.z,
@@ -118,7 +129,7 @@ class LioOdometryBridge(Node):
         odom.pose.pose.position.z = pz
 
         q = msg.pose.pose.orientation
-        qx, qy, qz, qw = _flu_to_frd_quaternion((q.x, q.y, q.z, q.w))
+        qx, qy, qz, qw = _enu_flu_to_ned_frd_quaternion((q.x, q.y, q.z, q.w))
         odom.pose.pose.orientation.x = qx
         odom.pose.pose.orientation.y = qy
         odom.pose.pose.orientation.z = qz

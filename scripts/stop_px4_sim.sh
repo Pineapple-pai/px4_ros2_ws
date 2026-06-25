@@ -49,15 +49,20 @@ pkill -x gazebo 2>/dev/null || true
 pkill -f "${QGC_DIR}/AppRun" 2>/dev/null || true
 pkill -f "QGroundControl" 2>/dev/null || true
 pkill -f "ros2 launch px4_autonomy_bringup" 2>/dev/null || true
+pkill -f "ros2 launch px4_trajectory_interface ego_planner_offboard.launch.py" 2>/dev/null || true
 pkill -f "ros2 launch nav2_bringup" 2>/dev/null || true
 pkill -f "px4_autonomy_mode" 2>/dev/null || true
 pkill -f "qgc_reposition_goal_bridge" 2>/dev/null || true
 pkill -f "px4_local_position_nav2_bridge" 2>/dev/null || true
+pkill -f "ego_planner_node" 2>/dev/null || true
+pkill -f "ego_traj_server" 2>/dev/null || true
+pkill -f "trajectory_interface" 2>/dev/null || true
 pkill -f "octomap_server" 2>/dev/null || true
 pkill -f "nav2_" 2>/dev/null || true
 pkill -f "gz_scan_to_pointcloud" 2>/dev/null || true
 pkill -f "gz_scan_min_distance" 2>/dev/null || true
 pkill -f "gz_six_direction_distance" 2>/dev/null || true
+pkill -f "lio_odometry_bridge" 2>/dev/null || true
 pkill -f "ros_gz_bridge" 2>/dev/null || true
 pkill -f "gz sim" 2>/dev/null || true
 

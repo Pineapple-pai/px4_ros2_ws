@@ -40,6 +40,7 @@ class QgcRepositionGoalBridge(Node):
         self.declare_parameter("mode_request_hold_s", 30.0)
         self.declare_parameter("goal_dedup_distance_m", 0.25)
         self.declare_parameter("nav2_server_timeout_s", 2.0)
+        self.declare_parameter("enable_nav2_action", True)
 
         command_topic = self.get_parameter("vehicle_command_topic").value
         command_in_topic = self.get_parameter("vehicle_command_in_topic").value
@@ -58,6 +59,7 @@ class QgcRepositionGoalBridge(Node):
         self._mode_request_hold_s = float(self.get_parameter("mode_request_hold_s").value)
         self._goal_dedup_distance_m = float(self.get_parameter("goal_dedup_distance_m").value)
         self._nav2_server_timeout_s = float(self.get_parameter("nav2_server_timeout_s").value)
+        self._enable_nav2_action = bool(self.get_parameter("enable_nav2_action").value)
 
         self._latest_local_position: Optional[VehicleLocalPosition] = None
         self._latest_vehicle_status: Optional[VehicleStatus] = None
@@ -67,7 +69,7 @@ class QgcRepositionGoalBridge(Node):
 
         self._goal_pub = self.create_publisher(PoseStamped, self._goal_pose_topic, 10)
         self._vehicle_command_pub = self.create_publisher(VehicleCommand, command_in_topic, 10)
-        self._nav2_client = ActionClient(self, NavigateToPose, action_name)
+        self._nav2_client = ActionClient(self, NavigateToPose, action_name) if self._enable_nav2_action else None
 
         self.create_subscription(
             VehicleLocalPosition,
@@ -93,7 +95,8 @@ class QgcRepositionGoalBridge(Node):
         self.get_logger().info(
             f"Listening for QGC reposition commands on {command_topic}; "
             f"requesting nav_state={self._ros2_nav_state} through {command_in_topic}; "
-            f"publishing Nav2 goals through action '{action_name}'."
+            f"publishing planner goals on {self._goal_pose_topic} "
+            f"with Nav2 action {'enabled' if self._enable_nav2_action else 'disabled'}."
         )
 
     def _handle_local_position(self, msg: VehicleLocalPosition) -> None:
@@ -131,7 +134,15 @@ class QgcRepositionGoalBridge(Node):
         self._last_goal_request_time = self.get_clock().now()
         self._nav2_goal_active = True
         self._request_ros2_mode_if_needed(force=True)
-        self._send_nav2_goal(pose)
+        if self._enable_nav2_action:
+            self._send_nav2_goal(pose)
+        else:
+            self.get_logger().info(
+                "Forwarded QGC reposition target to planner topic only: "
+                f"map x={pose.pose.position.x:.2f} "
+                f"y={pose.pose.position.y:.2f} "
+                f"z={pose.pose.position.z:.2f}"
+            )
 
     def _vehicle_ready_for_nav2_goal(self) -> bool:
         status = self._latest_vehicle_status
@@ -232,6 +243,8 @@ class QgcRepositionGoalBridge(Node):
         return pose
 
     def _send_nav2_goal(self, pose: PoseStamped) -> None:
+        if self._nav2_client is None:
+            return
         if not self._nav2_client.wait_for_server(timeout_sec=self._nav2_server_timeout_s):
             self.get_logger().warn(
                 f"Nav2 action server is not available; debug goal still published on {self._goal_pose_topic}."
