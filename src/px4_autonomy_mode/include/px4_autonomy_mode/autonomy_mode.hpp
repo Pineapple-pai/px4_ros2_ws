@@ -1,7 +1,9 @@
 #pragma once
 
 #include <Eigen/Core>
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -14,7 +16,11 @@
 #include <px4_ros2/utils/geometry.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
+#include <geometry_msgs/msg/twist.hpp>
+#include <px4_msgs/msg/vehicle_control_mode.hpp>
+#include <px4_msgs/msg/vehicle_status.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float32.hpp>
 #include <yaml-cpp/yaml.h>
 
@@ -58,6 +64,26 @@ public:
     node.declare_parameter("waypoints_topic", "/autonomy/waypoints_ned");
     node.declare_parameter("target_point_topic", "/autonomy/target_ned");
     node.declare_parameter("accept_runtime_target", true);
+    node.declare_parameter("control_source", "mission");
+    node.declare_parameter("nav2_cmd_vel_topic", "/cmd_vel");
+    node.declare_parameter("nav2_fixed_altitude_m", _mission_altitude_m);
+    node.declare_parameter("nav2_cmd_timeout_s", 0.5);
+    node.declare_parameter("nav2_lookahead_time_s", 1.0);
+    node.declare_parameter("nav2_min_lookahead_m", 0.35);
+    node.declare_parameter("nav2_max_cmd_speed_m_s", 0.45);
+    node.declare_parameter("nav2_turn_in_place_yaw_rate_rad_s", 0.35);
+    node.declare_parameter("nav2_turn_speed_scale", 0.35);
+    node.declare_parameter("nav2_turn_max_lookahead_m", 0.25);
+    node.declare_parameter("nav2_obstacle_slowdown_distance_m", 3.0);
+    node.declare_parameter("nav2_obstacle_min_speed_m_s", 0.12);
+    node.declare_parameter("nav2_emergency_retreat_distance_m", 0.8);
+    node.declare_parameter("nav2_emergency_retreat_speed_m_s", 0.25);
+    node.declare_parameter("nav2_require_ros2_control", true);
+    node.declare_parameter("nav2_required_nav_state", -1);
+    node.declare_parameter("nav2_vehicle_status_topic", "/fmu/out/vehicle_status_v4");
+    node.declare_parameter("nav2_vehicle_control_mode_topic", "/fmu/out/vehicle_control_mode");
+    node.declare_parameter("nav2_control_authority_topic", "/autonomy/nav2_control_authority_ok");
+    node.declare_parameter("nav2_status_timeout_s", 1.0);
 
     node.get_parameter("mission_size_m", _mission_size_m);
     node.get_parameter("mission_altitude_m", _mission_altitude_m);
@@ -90,6 +116,33 @@ public:
     node.get_parameter("waypoints_topic", _waypoints_topic);
     node.get_parameter("target_point_topic", _target_point_topic);
     node.get_parameter("accept_runtime_target", _accept_runtime_target);
+    node.get_parameter("control_source", _control_source);
+    node.get_parameter("nav2_cmd_vel_topic", _nav2_cmd_vel_topic);
+    node.get_parameter("nav2_fixed_altitude_m", _nav2_fixed_altitude_m);
+    node.get_parameter("nav2_cmd_timeout_s", _nav2_cmd_timeout_s);
+    node.get_parameter("nav2_lookahead_time_s", _nav2_lookahead_time_s);
+    node.get_parameter("nav2_min_lookahead_m", _nav2_min_lookahead_m);
+    node.get_parameter("nav2_max_cmd_speed_m_s", _nav2_max_cmd_speed_m_s);
+    node.get_parameter("nav2_turn_in_place_yaw_rate_rad_s", _nav2_turn_in_place_yaw_rate_rad_s);
+    node.get_parameter("nav2_turn_speed_scale", _nav2_turn_speed_scale);
+    node.get_parameter("nav2_turn_max_lookahead_m", _nav2_turn_max_lookahead_m);
+    node.get_parameter("nav2_obstacle_slowdown_distance_m", _nav2_obstacle_slowdown_distance_m);
+    node.get_parameter("nav2_obstacle_min_speed_m_s", _nav2_obstacle_min_speed_m_s);
+    node.get_parameter("nav2_emergency_retreat_distance_m", _nav2_emergency_retreat_distance_m);
+    node.get_parameter("nav2_emergency_retreat_speed_m_s", _nav2_emergency_retreat_speed_m_s);
+    node.get_parameter("nav2_require_ros2_control", _nav2_require_ros2_control);
+    node.get_parameter("nav2_required_nav_state", _nav2_required_nav_state);
+    node.get_parameter("nav2_vehicle_status_topic", _nav2_vehicle_status_topic);
+    node.get_parameter("nav2_vehicle_control_mode_topic", _nav2_vehicle_control_mode_topic);
+    node.get_parameter("nav2_control_authority_topic", _nav2_control_authority_topic);
+    node.get_parameter("nav2_status_timeout_s", _nav2_status_timeout_s);
+
+    if (_control_source != "mission" && _control_source != "nav2_cmd_vel") {
+      RCLCPP_WARN(node.get_logger(),
+        "Unsupported control_source='%s'. Falling back to 'mission'.",
+        _control_source.c_str());
+      _control_source = "mission";
+    }
     if (!_mission_file.empty()) {
       _configured_mission_waypoints_ned = parseMissionFile(_mission_file);
     }
@@ -144,6 +197,33 @@ public:
         _down_obstacle_distance_m = msg->data;
         _down_obstacle_stamp = this->node().get_clock()->now();
       });
+
+    _cmd_vel_sub = node.create_subscription<geometry_msgs::msg::Twist>(
+      _nav2_cmd_vel_topic,
+      rclcpp::QoS(10),
+      [this](const geometry_msgs::msg::Twist::SharedPtr msg) {
+        _latest_cmd_vel = *msg;
+        _latest_cmd_vel_stamp = this->node().get_clock()->now();
+      });
+
+    _vehicle_status_sub = node.create_subscription<px4_msgs::msg::VehicleStatus>(
+      _nav2_vehicle_status_topic,
+      rclcpp::QoS(5).best_effort(),
+      [this](const px4_msgs::msg::VehicleStatus::SharedPtr msg) {
+        _latest_vehicle_status = *msg;
+        _latest_vehicle_status_stamp = this->node().get_clock()->now();
+      });
+
+    _vehicle_control_mode_sub = node.create_subscription<px4_msgs::msg::VehicleControlMode>(
+      _nav2_vehicle_control_mode_topic,
+      rclcpp::QoS(5).best_effort(),
+      [this](const px4_msgs::msg::VehicleControlMode::SharedPtr msg) {
+        _latest_vehicle_control_mode = *msg;
+        _latest_vehicle_control_mode_stamp = this->node().get_clock()->now();
+      });
+
+    _nav2_control_authority_pub = node.create_publisher<std_msgs::msg::Bool>(
+      _nav2_control_authority_topic, rclcpp::QoS(5).transient_local());
 
     _target_point_sub = node.create_subscription<geometry_msgs::msg::PointStamped>(
       _target_point_topic,
@@ -223,10 +303,12 @@ public:
     clearAvoidance();
     buildMission();
     RCLCPP_INFO(node().get_logger(),
-      "Autonomy mode activated. waypoints=%zu mission_size=%.2f m altitude=%.2f m acceptance_radius=%.2f m obstacle_topic=%s target_topic=%s waypoints_topic=%s local_avoidance=%s",
+      "Autonomy mode activated. control_source=%s waypoints=%zu mission_size=%.2f m altitude=%.2f m acceptance_radius=%.2f m obstacle_topic=%s target_topic=%s waypoints_topic=%s local_avoidance=%s nav2_cmd_vel=%s",
+      _control_source.c_str(),
       _mission_waypoints.size(),
       _mission_size_m, _mission_altitude_m, _acceptance_radius_m, _obstacle_distance_topic.c_str(),
-      _target_point_topic.c_str(), _waypoints_topic.c_str(), _enable_local_avoidance ? "true" : "false");
+      _target_point_topic.c_str(), _waypoints_topic.c_str(), _enable_local_avoidance ? "true" : "false",
+      _nav2_cmd_vel_topic.c_str());
   }
 
   void onDeactivate() override
@@ -238,6 +320,11 @@ public:
   void updateSetpoint(float dt_s) override
   {
     (void)dt_s;
+    if (_control_source == "nav2_cmd_vel") {
+      updateNav2Setpoint();
+      return;
+    }
+
     if (_mission_waypoints.empty()) {
       completed(px4_ros2::Result::ModeFailureOther);
       return;
@@ -338,10 +425,277 @@ private:
     Transit,
     ObstacleHold,
     AvoidingObstacle,
+    WaitingNav2Command,
+    FollowingNav2Command,
+    Nav2StaleHold,
+    EmergencyStop,
     Aborted,
     Holding,
     Finished
   };
+
+  void updateNav2Setpoint()
+  {
+    const rclcpp::Time now = node().get_clock()->now();
+    const Eigen::Vector3f current_position = _vehicle_local_position->positionNed();
+    const float fixed_z_ned = -static_cast<float>(std::fabs(_nav2_fixed_altitude_m));
+
+    if (!nav2ControlAuthorityOk(now)) {
+      _state = MissionState::Nav2StaleHold;
+      publishGoto(Eigen::Vector3f{current_position.x(), current_position.y(), fixed_z_ned}, 0.0f);
+      return;
+    }
+
+    const auto emergency = handleNav2EmergencyObstacle();
+    if (emergency) {
+      return;
+    }
+
+    if (_latest_cmd_vel_stamp.nanoseconds() == 0) {
+      _state = MissionState::WaitingNav2Command;
+      publishGoto(Eigen::Vector3f{current_position.x(), current_position.y(), fixed_z_ned}, 0.0f);
+      RCLCPP_WARN_THROTTLE(node().get_logger(), *node().get_clock(), 2000,
+        "Waiting for Nav2 cmd_vel on %s.", _nav2_cmd_vel_topic.c_str());
+      return;
+    }
+
+    const double cmd_age_s = (now - _latest_cmd_vel_stamp).seconds();
+    if (_nav2_cmd_timeout_s > 0.0 && cmd_age_s > _nav2_cmd_timeout_s) {
+      _state = MissionState::Nav2StaleHold;
+      publishGoto(Eigen::Vector3f{current_position.x(), current_position.y(), fixed_z_ned}, 0.0f);
+      RCLCPP_WARN_THROTTLE(node().get_logger(), *node().get_clock(), 1000,
+        "Nav2 cmd_vel stale for %.2f s; holding position.", cmd_age_s);
+      return;
+    }
+
+    const float heading = _vehicle_local_position->heading();
+    const float yaw_rate = static_cast<float>(_latest_cmd_vel.angular.z);
+    float forward_speed_m_s = static_cast<float>(_latest_cmd_vel.linear.x);
+    float left_speed_m_s = static_cast<float>(_latest_cmd_vel.linear.y);
+    forward_speed_m_s = std::clamp(
+      forward_speed_m_s,
+      -static_cast<float>(_nav2_max_cmd_speed_m_s),
+      static_cast<float>(_nav2_max_cmd_speed_m_s));
+    left_speed_m_s = std::clamp(
+      left_speed_m_s,
+      -static_cast<float>(_nav2_max_cmd_speed_m_s),
+      static_cast<float>(_nav2_max_cmd_speed_m_s));
+    float horizontal_speed_m_s = std::hypot(forward_speed_m_s, left_speed_m_s);
+    horizontal_speed_m_s = std::min(horizontal_speed_m_s, static_cast<float>(_max_horizontal_velocity_m_s));
+    horizontal_speed_m_s = std::min(horizontal_speed_m_s, static_cast<float>(_nav2_max_cmd_speed_m_s));
+
+    const bool sharp_turn = std::fabs(yaw_rate) >= static_cast<float>(_nav2_turn_in_place_yaw_rate_rad_s);
+    if (sharp_turn) {
+      forward_speed_m_s *= static_cast<float>(_nav2_turn_speed_scale);
+      left_speed_m_s *= static_cast<float>(_nav2_turn_speed_scale);
+      horizontal_speed_m_s = std::hypot(forward_speed_m_s, left_speed_m_s);
+      if (horizontal_speed_m_s < 0.08f) {
+        forward_speed_m_s = 0.0f;
+        left_speed_m_s = 0.0f;
+        horizontal_speed_m_s = 0.0f;
+      }
+    }
+
+    if (const auto front_distance = freshDistance(_front_obstacle_distance_m, _front_obstacle_stamp)) {
+      const float slowdown_distance = static_cast<float>(_nav2_obstacle_slowdown_distance_m);
+      if (slowdown_distance > static_cast<float>(_obstacle_stop_distance_m) &&
+          *front_distance < slowdown_distance) {
+        const float usable_range = slowdown_distance - static_cast<float>(_obstacle_stop_distance_m);
+        const float clearance = std::max(0.0f, *front_distance - static_cast<float>(_obstacle_stop_distance_m));
+        const float scale = std::clamp(clearance / usable_range, 0.0f, 1.0f);
+        const float min_speed = static_cast<float>(_nav2_obstacle_min_speed_m_s);
+        if (forward_speed_m_s > 0.0f) {
+          forward_speed_m_s *= scale;
+        }
+        horizontal_speed_m_s = std::hypot(forward_speed_m_s, left_speed_m_s);
+        if (scale > 0.35f && horizontal_speed_m_s > 0.02f && std::fabs(left_speed_m_s) < 0.02f) {
+          forward_speed_m_s = std::max(forward_speed_m_s, min_speed);
+          horizontal_speed_m_s = std::hypot(forward_speed_m_s, left_speed_m_s);
+        }
+      }
+    }
+
+    const float lookahead_time_s = static_cast<float>(std::max(0.1, _nav2_lookahead_time_s));
+    const float predicted_yaw_delta = yaw_rate * lookahead_time_s;
+    float lookahead_m = horizontal_speed_m_s * lookahead_time_s;
+    if (horizontal_speed_m_s > 0.02f) {
+      lookahead_m = std::max(static_cast<float>(_nav2_min_lookahead_m), lookahead_m);
+      if (sharp_turn) {
+        lookahead_m = std::min(lookahead_m, static_cast<float>(_nav2_turn_max_lookahead_m));
+      }
+    }
+
+    Eigen::Vector3f target = current_position;
+    if (horizontal_speed_m_s > 0.02f) {
+      const float travel_heading = heading + 0.5f * predicted_yaw_delta;
+      const float command_scale = lookahead_m / std::max(horizontal_speed_m_s, 0.001f);
+      const float forward_offset_m = forward_speed_m_s * command_scale;
+      const float left_offset_m = left_speed_m_s * command_scale;
+      target.x() += std::cos(travel_heading) * forward_offset_m - std::sin(travel_heading) * left_offset_m;
+      target.y() += std::sin(travel_heading) * forward_offset_m + std::cos(travel_heading) * left_offset_m;
+    }
+    target.z() = fixed_z_ned;
+
+    std::optional<float> heading_target{};
+    if (std::fabs(yaw_rate) > 0.01f) {
+      heading_target = heading + predicted_yaw_delta;
+    } else if (horizontal_speed_m_s > 0.02f) {
+      heading_target = std::atan2(target.y() - current_position.y(), target.x() - current_position.x());
+    }
+
+    _state = MissionState::FollowingNav2Command;
+    _goto_setpoint->update(
+      target,
+      heading_target,
+      horizontal_speed_m_s,
+      static_cast<float>(_max_vertical_velocity_m_s),
+      px4_ros2::degToRad(static_cast<float>(_max_heading_rate_deg_s)));
+  }
+
+  bool nav2ControlAuthorityOk(const rclcpp::Time & now)
+  {
+    if (!_nav2_require_ros2_control) {
+      publishNav2ControlAuthority(true);
+      return true;
+    }
+
+    if (_latest_vehicle_status_stamp.nanoseconds() == 0) {
+      publishNav2ControlAuthority(false);
+      RCLCPP_WARN_THROTTLE(node().get_logger(), *node().get_clock(), 1000,
+        "Nav2 control authority unknown: no VehicleStatus on %s.",
+        _nav2_vehicle_status_topic.c_str());
+      return false;
+    }
+
+    const double status_age_s = (now - _latest_vehicle_status_stamp).seconds();
+    if (_nav2_status_timeout_s > 0.0 && status_age_s > _nav2_status_timeout_s) {
+      publishNav2ControlAuthority(false);
+      RCLCPP_WARN_THROTTLE(node().get_logger(), *node().get_clock(), 1000,
+        "Nav2 control authority stale: VehicleStatus age %.2f s > %.2f s.",
+        status_age_s, _nav2_status_timeout_s);
+      return false;
+    }
+
+    const uint8_t expected_nav_state =
+      _nav2_required_nav_state >= 0
+      ? static_cast<uint8_t>(_nav2_required_nav_state)
+      : static_cast<uint8_t>(id());
+    const bool expected_state = _latest_vehicle_status.nav_state == expected_nav_state;
+    const bool armed =
+      _latest_vehicle_status.arming_state == px4_msgs::msg::VehicleStatus::ARMING_STATE_ARMED;
+    const bool healthy = !_latest_vehicle_status.failsafe;
+    const bool ok = expected_state && armed && healthy && isActive();
+
+    publishNav2ControlAuthority(ok);
+    if (!ok) {
+      RCLCPP_WARN_THROTTLE(node().get_logger(), *node().get_clock(), 1000,
+        "Nav2 movement blocked: expected nav_state=%u active=%s, got nav_state=%u armed=%s failsafe=%s. "
+        "PX4 manual/RC modes remain under PX4 control; QGC Go-to must be routed through ROS2 Autonomy/Nav2.",
+        static_cast<unsigned>(expected_nav_state),
+        isActive() ? "true" : "false",
+        static_cast<unsigned>(_latest_vehicle_status.nav_state),
+        armed ? "true" : "false",
+        _latest_vehicle_status.failsafe ? "true" : "false");
+      return false;
+    }
+
+    if (_latest_vehicle_control_mode_stamp.nanoseconds() != 0) {
+      const double control_mode_age_s = (now - _latest_vehicle_control_mode_stamp).seconds();
+      if (_nav2_status_timeout_s <= 0.0 || control_mode_age_s <= _nav2_status_timeout_s) {
+        RCLCPP_DEBUG_THROTTLE(node().get_logger(), *node().get_clock(), 2000,
+          "Nav2 authority ok: nav_state=%u control_mode source_id=%u pos=%s vel=%s offboard=%s auto=%s.",
+          static_cast<unsigned>(_latest_vehicle_status.nav_state),
+          static_cast<unsigned>(_latest_vehicle_control_mode.source_id),
+          _latest_vehicle_control_mode.flag_control_position_enabled ? "true" : "false",
+          _latest_vehicle_control_mode.flag_control_velocity_enabled ? "true" : "false",
+          _latest_vehicle_control_mode.flag_control_offboard_enabled ? "true" : "false",
+          _latest_vehicle_control_mode.flag_control_auto_enabled ? "true" : "false");
+      }
+    }
+
+    return true;
+  }
+
+  void publishNav2ControlAuthority(bool ok)
+  {
+    if (!_nav2_control_authority_pub) {
+      return;
+    }
+    std_msgs::msg::Bool msg;
+    msg.data = ok;
+    _nav2_control_authority_pub->publish(msg);
+  }
+
+  bool handleNav2EmergencyObstacle()
+  {
+    if (!_enable_obstacle_hold) {
+      return false;
+    }
+
+    const std::optional<float> obstacle_distance = effectiveObstacleDistance();
+    const std::optional<float> forward_obstacle_distance = freshDistance(
+      _front_obstacle_distance_m, _front_obstacle_stamp);
+    const float distance = forward_obstacle_distance.value_or(
+      obstacle_distance.value_or(std::numeric_limits<float>::infinity()));
+    if (!std::isfinite(distance)) {
+      return false;
+    }
+
+    if (distance <= static_cast<float>(_obstacle_abort_distance_m)) {
+      _state = MissionState::EmergencyStop;
+      Eigen::Vector3f hold_target = _vehicle_local_position->positionNed();
+      const float heading = _vehicle_local_position->heading();
+      const float retreat_distance = static_cast<float>(std::max(0.0, _nav2_emergency_retreat_distance_m));
+      hold_target.x() -= std::cos(heading) * retreat_distance;
+      hold_target.y() -= std::sin(heading) * retreat_distance;
+      hold_target.z() = -static_cast<float>(std::fabs(_nav2_fixed_altitude_m));
+      _goto_setpoint->update(
+        hold_target,
+        std::nullopt,
+        static_cast<float>(_nav2_emergency_retreat_speed_m_s),
+        static_cast<float>(_max_vertical_velocity_m_s),
+        px4_ros2::degToRad(static_cast<float>(_max_heading_rate_deg_s)));
+      RCLCPP_ERROR_THROTTLE(node().get_logger(), *node().get_clock(), 1000,
+        "Emergency obstacle retreat in Nav2 mode: %.2f m <= abort threshold %.2f m. "
+        "Keeping ROS2 control active and backing away %.2f m.",
+        distance, _obstacle_abort_distance_m, retreat_distance);
+      return true;
+    }
+
+    if (distance <= static_cast<float>(_obstacle_stop_distance_m)) {
+      const bool fresh_nav2_cmd =
+        _latest_cmd_vel_stamp.nanoseconds() != 0 &&
+        (_nav2_cmd_timeout_s <= 0.0 ||
+        (node().get_clock()->now() - _latest_cmd_vel_stamp).seconds() <= _nav2_cmd_timeout_s);
+      const bool nav2_requests_non_forward_recovery =
+        fresh_nav2_cmd &&
+        std::fabs(static_cast<float>(_latest_cmd_vel.linear.x)) < 0.03f &&
+        (std::fabs(static_cast<float>(_latest_cmd_vel.angular.z)) > 0.05f ||
+        std::fabs(static_cast<float>(_latest_cmd_vel.linear.y)) > 0.03f);
+      if (nav2_requests_non_forward_recovery) {
+        RCLCPP_WARN_THROTTLE(node().get_logger(), *node().get_clock(), 1000,
+          "Obstacle within stop distance (%.2f m <= %.2f m), but allowing Nav2 non-forward recovery.",
+          distance, _obstacle_stop_distance_m);
+        return false;
+      }
+
+      _state = MissionState::EmergencyStop;
+      Eigen::Vector3f hold_target = _vehicle_local_position->positionNed();
+      hold_target.z() = -static_cast<float>(std::fabs(_nav2_fixed_altitude_m));
+      _goto_setpoint->update(
+        hold_target,
+        std::nullopt,
+        0.0f,
+        0.0f,
+        px4_ros2::degToRad(static_cast<float>(_max_heading_rate_deg_s)));
+      RCLCPP_WARN_THROTTLE(node().get_logger(), *node().get_clock(), 1000,
+        "Emergency obstacle hold in Nav2 mode: %.2f m <= stop threshold %.2f m.",
+        distance, _obstacle_stop_distance_m);
+      return true;
+    }
+
+    return false;
+  }
 
   bool handleObstacleLogic()
   {
@@ -815,6 +1169,10 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr _down_obstacle_distance_sub;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr _target_point_sub;
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr _waypoints_sub;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr _cmd_vel_sub;
+  rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr _vehicle_status_sub;
+  rclcpp::Subscription<px4_msgs::msg::VehicleControlMode>::SharedPtr _vehicle_control_mode_sub;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr _nav2_control_authority_pub;
 
   Eigen::Vector3f _start_position_ned_m{0.0f, 0.0f, 0.0f};
   std::vector<MissionWaypoint> _mission_waypoints;
@@ -838,6 +1196,8 @@ private:
   std::string _down_obstacle_distance_topic{"/perception/down_obstacle_distance"};
   std::string _target_point_topic{"/autonomy/target_ned"};
   std::string _waypoints_topic{"/autonomy/waypoints_ned"};
+  std::string _control_source{"mission"};
+  std::string _nav2_cmd_vel_topic{"/cmd_vel"};
   std::string _mission_file{};
   std::string _mission_waypoints_ned_text{};
   double _obstacle_stop_distance_m{2.0};
@@ -851,6 +1211,24 @@ private:
   double _avoidance_forward_offset_m{2.0};
   double _avoidance_speed_m_s{0.45};
   double _obstacle_data_timeout_s{1.0};
+  double _nav2_fixed_altitude_m{4.0};
+  double _nav2_cmd_timeout_s{0.5};
+  double _nav2_lookahead_time_s{1.0};
+  double _nav2_min_lookahead_m{0.35};
+  double _nav2_max_cmd_speed_m_s{0.45};
+  double _nav2_turn_in_place_yaw_rate_rad_s{0.35};
+  double _nav2_turn_speed_scale{0.35};
+  double _nav2_turn_max_lookahead_m{0.25};
+  double _nav2_obstacle_slowdown_distance_m{3.0};
+  double _nav2_obstacle_min_speed_m_s{0.12};
+  double _nav2_emergency_retreat_distance_m{0.8};
+  double _nav2_emergency_retreat_speed_m_s{0.25};
+  bool _nav2_require_ros2_control{true};
+  int _nav2_required_nav_state{-1};
+  std::string _nav2_vehicle_status_topic{"/fmu/out/vehicle_status_v4"};
+  std::string _nav2_vehicle_control_mode_topic{"/fmu/out/vehicle_control_mode"};
+  std::string _nav2_control_authority_topic{"/autonomy/nav2_control_authority_ok"};
+  double _nav2_status_timeout_s{1.0};
   bool _accept_runtime_target{true};
   bool _hold_started{false};
   bool _mission_completed_reported{false};
@@ -865,12 +1243,18 @@ private:
   rclcpp::Time _right_obstacle_stamp{};
   rclcpp::Time _up_obstacle_stamp{};
   rclcpp::Time _down_obstacle_stamp{};
+  rclcpp::Time _latest_cmd_vel_stamp{};
+  rclcpp::Time _latest_vehicle_status_stamp{};
+  rclcpp::Time _latest_vehicle_control_mode_stamp{};
   float _latest_obstacle_distance_m{-1.0f};
   float _front_obstacle_distance_m{-1.0f};
   float _left_obstacle_distance_m{-1.0f};
   float _right_obstacle_distance_m{-1.0f};
   float _up_obstacle_distance_m{-1.0f};
   float _down_obstacle_distance_m{-1.0f};
+  geometry_msgs::msg::Twist _latest_cmd_vel{};
+  px4_msgs::msg::VehicleStatus _latest_vehicle_status{};
+  px4_msgs::msg::VehicleControlMode _latest_vehicle_control_mode{};
   std::optional<Eigen::Vector3f> _avoidance_target_ned_m{};
   std::string _avoidance_side{"none"};
   std::vector<MissionWaypoint> _configured_mission_waypoints_ned{};

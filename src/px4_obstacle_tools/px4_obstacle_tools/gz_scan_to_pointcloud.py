@@ -7,9 +7,11 @@ from typing import Optional
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
+from px4_msgs.msg import VehicleLocalPosition
 
 from px4_obstacle_tools.gz_scan_min_distance import _GZ_TOPIC_READER_SH
 
@@ -30,6 +32,9 @@ class GazeboScanToPointCloud(Node):
         self.declare_parameter("range_max_m", 20.0)
         self.declare_parameter("angle_min_rad", -3.141592653589793)
         self.declare_parameter("angle_max_rad", 3.141592653589793)
+        self.declare_parameter("use_vehicle_pose", False)
+        self.declare_parameter("vehicle_local_position_topic", "/fmu/out/vehicle_local_position_v1")
+        self.declare_parameter("vehicle_frame_is_frd", True)
 
         self._gz_scan_topic = self.get_parameter("gz_scan_topic").value
         cloud_topic = self.get_parameter("cloud_topic").value
@@ -38,8 +43,19 @@ class GazeboScanToPointCloud(Node):
         self._range_max_m = float(self.get_parameter("range_max_m").value)
         self._default_angle_min_rad = float(self.get_parameter("angle_min_rad").value)
         self._default_angle_max_rad = float(self.get_parameter("angle_max_rad").value)
+        self._use_vehicle_pose = bool(self.get_parameter("use_vehicle_pose").value)
+        self._vehicle_frame_is_frd = bool(self.get_parameter("vehicle_frame_is_frd").value)
+        self._vehicle_pose: Optional[tuple[float, float, float]] = None
 
         self._publisher = self.create_publisher(PointCloud2, cloud_topic, 10)
+        if self._use_vehicle_pose:
+            vehicle_local_position_topic = self.get_parameter("vehicle_local_position_topic").value
+            self.create_subscription(
+                VehicleLocalPosition,
+                vehicle_local_position_topic,
+                self._handle_vehicle_local_position,
+                qos_profile_sensor_data,
+            )
         self._float_pattern = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
         self._single_value_patterns = {
             "angle_min": re.compile(r"angle_min:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)"),
@@ -61,6 +77,11 @@ class GazeboScanToPointCloud(Node):
         self.get_logger().info(
             f"Gazebo scan -> PointCloud2: {self._gz_scan_topic} -> {cloud_topic}"
         )
+
+    def _handle_vehicle_local_position(self, msg: VehicleLocalPosition) -> None:
+        if not msg.xy_valid:
+            return
+        self._vehicle_pose = (float(msg.x), float(msg.y), float(msg.heading))
 
     def _clean_env(self) -> dict[str, str]:
         env = {}
@@ -146,11 +167,28 @@ class GazeboScanToPointCloud(Node):
             range_max = float(scan_meta["range_max"])
 
             points = []
+            vehicle_pose = self._vehicle_pose
             for index, distance in enumerate(ranges):
                 if not math.isfinite(distance) or not (range_min <= distance <= range_max):
                     continue
                 angle = angle_min + (float(angle_step) * index)
-                points.append((distance * math.cos(angle), distance * math.sin(angle), 0.0))
+                local_x = distance * math.cos(angle)
+                local_y = distance * math.sin(angle)
+                if self._use_vehicle_pose and vehicle_pose is not None:
+                    vehicle_x, vehicle_y, vehicle_heading = vehicle_pose
+                    if self._vehicle_frame_is_frd:
+                        body_x = local_x
+                        body_y = -local_y
+                    else:
+                        body_x = local_x
+                        body_y = local_y
+                    cos_yaw = math.cos(vehicle_heading)
+                    sin_yaw = math.sin(vehicle_heading)
+                    map_x = vehicle_x + (body_x * cos_yaw) - (body_y * sin_yaw)
+                    map_y = vehicle_y + (body_x * sin_yaw) + (body_y * cos_yaw)
+                    points.append((map_x, map_y, 0.0))
+                else:
+                    points.append((local_x, local_y, 0.0))
 
             ranges = []
             if not points:

@@ -5,7 +5,8 @@ PX4_DIR="${PX4_DIR:-/home/p/PX4-Autopilot}"
 WS_DIR="${WS_DIR:-/home/p/px4_ros2_ws}"
 QGC_DIR="${QGC_DIR:-/home/p/下载/PX4/qgc-daily-root/squashfs-root}"
 AGENT_PORT="${AGENT_PORT:-8888}"
-TERMINAL_LAYOUT="${TERMINAL_LAYOUT:-tabs}"
+TERMINAL_LAYOUT="${TERMINAL_LAYOUT:-windows}"
+KEEP_TERMINALS_OPEN="${KEEP_TERMINALS_OPEN:-true}"
 
 # ============ 仿真配置 ============
 # 仿真后端: gazebo-classic 或 gz（新版 Gazebo Ignition）
@@ -58,27 +59,105 @@ WAYPOINTS_TOPIC="${WAYPOINTS_TOPIC:-/autonomy/waypoints_ned}"
 ACCEPT_RUNTIME_TARGET="${ACCEPT_RUNTIME_TARGET:-true}"
 
 # ============ 功能开关 ============
-USE_SIM_TIME="${USE_SIM_TIME:-true}"
+USE_SIM_TIME="${USE_SIM_TIME:-false}"
 USE_FASTLIO="${USE_FASTLIO:-false}"
 USE_LIVOX="${USE_LIVOX:-false}"
+USE_NAV2="${USE_NAV2:-false}"
+LIVOX_CONFIG="${LIVOX_CONFIG:-${WS_DIR}/src/livox_ros_driver2/config/MID360_config.json}"
 FASTLIO_CONFIG_PATH="${FASTLIO_CONFIG_PATH:-}"
 FASTLIO_CONFIG_FILE="${FASTLIO_CONFIG_FILE:-mid360.yaml}"
 FASTLIO_RVIZ="${FASTLIO_RVIZ:-false}"
+CONTROL_SOURCE="${CONTROL_SOURCE:-}"
+NAV2_PARAMS_FILE="${NAV2_PARAMS_FILE:-${WS_DIR}/src/px4_autonomy_bringup/config/nav2_params.yaml}"
+NAV2_CMD_VEL_TOPIC="${NAV2_CMD_VEL_TOPIC:-/cmd_vel}"
+NAV2_FIXED_ALTITUDE_M="${NAV2_FIXED_ALTITUDE_M:-${MISSION_ALTITUDE_M}}"
+NAV2_CMD_TIMEOUT_S="${NAV2_CMD_TIMEOUT_S:-0.5}"
+NAV2_LOOKAHEAD_TIME_S="${NAV2_LOOKAHEAD_TIME_S:-1.0}"
+NAV2_MIN_LOOKAHEAD_M="${NAV2_MIN_LOOKAHEAD_M:-0.35}"
+NAV2_MAX_CMD_SPEED_M_S="${NAV2_MAX_CMD_SPEED_M_S:-0.45}"
+NAV2_TURN_IN_PLACE_YAW_RATE_RAD_S="${NAV2_TURN_IN_PLACE_YAW_RATE_RAD_S:-0.35}"
+NAV2_TURN_SPEED_SCALE="${NAV2_TURN_SPEED_SCALE:-0.25}"
+NAV2_TURN_MAX_LOOKAHEAD_M="${NAV2_TURN_MAX_LOOKAHEAD_M:-0.20}"
+NAV2_OBSTACLE_SLOWDOWN_DISTANCE_M="${NAV2_OBSTACLE_SLOWDOWN_DISTANCE_M:-3.0}"
+NAV2_OBSTACLE_MIN_SPEED_M_S="${NAV2_OBSTACLE_MIN_SPEED_M_S:-0.10}"
+NAV2_EMERGENCY_RETREAT_DISTANCE_M="${NAV2_EMERGENCY_RETREAT_DISTANCE_M:-0.8}"
+NAV2_EMERGENCY_RETREAT_SPEED_M_S="${NAV2_EMERGENCY_RETREAT_SPEED_M_S:-0.25}"
+NAV2_REQUIRE_ROS2_CONTROL="${NAV2_REQUIRE_ROS2_CONTROL:-true}"
+NAV2_REQUIRED_NAV_STATE="${NAV2_REQUIRED_NAV_STATE:-23}"
+NAV2_STATUS_TIMEOUT_S="${NAV2_STATUS_TIMEOUT_S:-1.0}"
+QGC_AUTO_REQUEST_ROS2_MODE="${QGC_AUTO_REQUEST_ROS2_MODE:-true}"
+QGC_MODE_REQUEST_PERIOD_S="${QGC_MODE_REQUEST_PERIOD_S:-0.25}"
+QGC_MODE_REQUEST_HOLD_S="${QGC_MODE_REQUEST_HOLD_S:-30.0}"
+QGC_REPOSITION_GOAL_BRIDGE="${QGC_REPOSITION_GOAL_BRIDGE:-true}"
+NAV2_ODOM_SOURCE="${NAV2_ODOM_SOURCE:-px4_local}"
+NAV2_CLOUD_TOPIC="${NAV2_CLOUD_TOPIC:-/autonomy/cloud_registered}"
+LAUNCH_GZ_SCAN_TO_POINTCLOUD="${LAUNCH_GZ_SCAN_TO_POINTCLOUD:-}"
+OCTOMAP_RESOLUTION="${OCTOMAP_RESOLUTION:-0.10}"
+OCTOMAP_MIN_Z="${OCTOMAP_MIN_Z:--0.5}"
+OCTOMAP_MAX_Z="${OCTOMAP_MAX_Z:-2.0}"
 LAUNCH_OBSTACLE_SIM="${LAUNCH_OBSTACLE_SIM:-false}"
 OBSTACLE_SIM_MODE="${OBSTACLE_SIM_MODE:-safe}"
 
-if [[ -z "${POINTCLOUD_TOPIC:-}" ]]; then
-  if [[ "${USE_FASTLIO}" == "true" ]]; then
-    POINTCLOUD_TOPIC="/autonomy/cloud_registered"
+if [[ -z "${CONTROL_SOURCE}" ]]; then
+  if [[ "${USE_NAV2}" == "true" ]]; then
+    CONTROL_SOURCE="nav2_cmd_vel"
   else
-    POINTCLOUD_TOPIC="/livox/lidar"
+    CONTROL_SOURCE="mission"
   fi
 fi
 
+if [[ -z "${POINTCLOUD_TOPIC:-}" ]]; then
+  POINTCLOUD_TOPIC="/livox/lidar"
+fi
+
 # ---------- 预处理检查 ----------
-if ! command -v gnome-terminal >/dev/null 2>&1; then
-  echo "gnome-terminal not found"
+case "${TERMINAL_LAYOUT}" in
+  windows|tabs|tmux|headless) ;;
+  *)
+    echo "Unsupported TERMINAL_LAYOUT=${TERMINAL_LAYOUT}. Use windows, tabs, tmux, or headless."
+    exit 1
+    ;;
+esac
+
+if [[ "${TERMINAL_LAYOUT}" == "windows" || "${TERMINAL_LAYOUT}" == "tabs" ]]; then
+  if ! command -v gnome-terminal >/dev/null 2>&1; then
+    echo "gnome-terminal not found. Use TERMINAL_LAYOUT=tmux or TERMINAL_LAYOUT=headless."
+    exit 1
+  fi
+fi
+
+if [[ "${TERMINAL_LAYOUT}" == "tmux" ]] && ! command -v tmux >/dev/null 2>&1; then
+  echo "tmux not found. Use TERMINAL_LAYOUT=windows/tabs/headless or install tmux."
   exit 1
+fi
+
+if [[ "${USE_NAV2}" == "true" ]]; then
+  case "${NAV2_ODOM_SOURCE}" in
+    px4_local|fastlio) ;;
+    *)
+      echo "Unsupported NAV2_ODOM_SOURCE=${NAV2_ODOM_SOURCE}. Use px4_local or fastlio."
+      exit 1
+      ;;
+  esac
+
+  if [[ "${NAV2_ODOM_SOURCE}" == "fastlio" && "${USE_FASTLIO}" != "true" ]]; then
+    echo "NAV2_ODOM_SOURCE=fastlio requires USE_FASTLIO=true."
+    echo "For Gazebo simulation without FAST-LIO point clouds, use the default NAV2_ODOM_SOURCE=px4_local."
+    exit 1
+  fi
+
+  missing_nav2_pkgs=()
+  for pkg in nav2_bringup nav2_msgs octomap_server; do
+    if ! bash -lc "source /opt/ros/humble/setup.bash >/dev/null 2>&1 && ros2 pkg prefix ${pkg} >/dev/null 2>&1"; then
+      missing_nav2_pkgs+=("${pkg}")
+    fi
+  done
+  if ((${#missing_nav2_pkgs[@]} > 0)); then
+    echo "Missing ROS 2 Nav2 dependencies: ${missing_nav2_pkgs[*]}"
+    echo "Install them with:"
+    echo "  sudo apt update && sudo apt install ros-humble-navigation2 ros-humble-nav2-bringup ros-humble-octomap-server"
+    exit 1
+  fi
 fi
 
 if [[ ! -d "${PX4_DIR}" ]]; then
@@ -282,9 +361,15 @@ if [[ "${SIM_BACKEND}" == "gazebo-classic" ]]; then
   # 导致 libgazebo_ros_laser.so 无法发布 ROS2 话题 /scan，
   # 因此只能通过 gz_scan_min_distance 读取 Gazebo 原生传输层主题。
   ENABLE_LASERSCAN_MIN_DISTANCE="false"
+  if [[ -z "${LAUNCH_GZ_SCAN_TO_POINTCLOUD}" ]]; then
+    LAUNCH_GZ_SCAN_TO_POINTCLOUD="${USE_NAV2}"
+  fi
 else
   GZ_SCAN_DISTANCE_ARG="launch_gz_scan_distance:=false"
   GZ_SCAN_TOPIC_ARG=""
+  if [[ -z "${LAUNCH_GZ_SCAN_TO_POINTCLOUD}" ]]; then
+    LAUNCH_GZ_SCAN_TO_POINTCLOUD="false"
+  fi
 fi
 
 cat > "${WS_DIR}/.runtime/start_ros2_autonomy.sh" <<EOF
@@ -301,13 +386,41 @@ exec ros2 launch px4_autonomy_bringup autonomy_stack.launch.py \\
   max_heading_rate_deg_s:=${MAX_HEADING_RATE_DEG_S} \\
   mission_timeout_s:=${MISSION_TIMEOUT_S} \\
   auto_rtl_after_finish:=${AUTO_RTL_AFTER_FINISH} \\
-  mission_waypoints_ned:="${MISSION_WAYPOINTS_NED}" \\
-  mission_file:="${MISSION_FILE}" \\
   use_sim_time:=${USE_SIM_TIME} \\
   use_fastlio:=${USE_FASTLIO} \\
   use_livox:=${USE_LIVOX} \\
+  use_nav2:=${USE_NAV2} \\
+  livox_config:=${LIVOX_CONFIG} \\
   fastlio_config_file:=${FASTLIO_CONFIG_FILE} \\
   fastlio_rviz:=${FASTLIO_RVIZ} \\
+  control_source:=${CONTROL_SOURCE} \\
+  nav2_params_file:=${NAV2_PARAMS_FILE} \\
+  nav2_cmd_vel_topic:=${NAV2_CMD_VEL_TOPIC} \\
+  nav2_fixed_altitude_m:=${NAV2_FIXED_ALTITUDE_M} \\
+  nav2_cmd_timeout_s:=${NAV2_CMD_TIMEOUT_S} \\
+  nav2_lookahead_time_s:=${NAV2_LOOKAHEAD_TIME_S} \\
+  nav2_min_lookahead_m:=${NAV2_MIN_LOOKAHEAD_M} \\
+  nav2_max_cmd_speed_m_s:=${NAV2_MAX_CMD_SPEED_M_S} \\
+  nav2_turn_in_place_yaw_rate_rad_s:=${NAV2_TURN_IN_PLACE_YAW_RATE_RAD_S} \\
+  nav2_turn_speed_scale:=${NAV2_TURN_SPEED_SCALE} \\
+  nav2_turn_max_lookahead_m:=${NAV2_TURN_MAX_LOOKAHEAD_M} \\
+  nav2_obstacle_slowdown_distance_m:=${NAV2_OBSTACLE_SLOWDOWN_DISTANCE_M} \\
+  nav2_obstacle_min_speed_m_s:=${NAV2_OBSTACLE_MIN_SPEED_M_S} \\
+  nav2_emergency_retreat_distance_m:=${NAV2_EMERGENCY_RETREAT_DISTANCE_M} \\
+  nav2_emergency_retreat_speed_m_s:=${NAV2_EMERGENCY_RETREAT_SPEED_M_S} \\
+  nav2_require_ros2_control:=${NAV2_REQUIRE_ROS2_CONTROL} \\
+  nav2_required_nav_state:=${NAV2_REQUIRED_NAV_STATE} \\
+  nav2_status_timeout_s:=${NAV2_STATUS_TIMEOUT_S} \\
+  qgc_auto_request_ros2_mode:=${QGC_AUTO_REQUEST_ROS2_MODE} \\
+  qgc_mode_request_period_s:=${QGC_MODE_REQUEST_PERIOD_S} \\
+  qgc_mode_request_hold_s:=${QGC_MODE_REQUEST_HOLD_S} \\
+  qgc_reposition_goal_bridge:=${QGC_REPOSITION_GOAL_BRIDGE} \\
+  nav2_odom_source:=${NAV2_ODOM_SOURCE} \\
+  nav2_cloud_topic:=${NAV2_CLOUD_TOPIC} \\
+  launch_gz_scan_to_pointcloud:=${LAUNCH_GZ_SCAN_TO_POINTCLOUD} \\
+  octomap_resolution:=${OCTOMAP_RESOLUTION} \\
+  octomap_min_z:=${OCTOMAP_MIN_Z} \\
+  octomap_max_z:=${OCTOMAP_MAX_Z} \\
   launch_obstacle_sim:=${LAUNCH_OBSTACLE_SIM} \\
   obstacle_sim_mode:=${OBSTACLE_SIM_MODE} \\
   obstacle_distance_topic:=${OBSTACLE_DISTANCE_TOPIC} \\
@@ -335,6 +448,18 @@ if [[ -n "${GZ_SCAN_TOPIC_ARG}" ]]; then
 EOF
 fi
 
+if [[ -n "${MISSION_WAYPOINTS_NED}" ]]; then
+  cat >> "${WS_DIR}/.runtime/start_ros2_autonomy.sh" <<EOF
+  mission_waypoints_ned:="${MISSION_WAYPOINTS_NED}" \\
+EOF
+fi
+
+if [[ -n "${MISSION_FILE}" ]]; then
+  cat >> "${WS_DIR}/.runtime/start_ros2_autonomy.sh" <<EOF
+  mission_file:="${MISSION_FILE}" \\
+EOF
+fi
+
 if [[ -n "${FASTLIO_CONFIG_PATH}" ]]; then
   cat >> "${WS_DIR}/.runtime/start_ros2_autonomy.sh" <<EOF
   fastlio_config_path:=${FASTLIO_CONFIG_PATH} \\
@@ -357,10 +482,18 @@ cat > "${WS_DIR}/.runtime/wait_for_fmu.sh" <<EOF
 set -euo pipefail
 source "${WS_DIR}/.runtime/ros2_autonomy_env.sh"
 echo "Waiting for /fmu topics..."
-until ros2 topic list 2>/dev/null | grep -q '^/fmu/'; do
+deadline=\$((SECONDS + 90))
+until timeout 5 ros2 topic list 2>/dev/null | grep -q '^/fmu/'; do
+  if ((SECONDS >= deadline)); then
+    echo "WARNING: /fmu topics were not discovered within 90s; starting ROS2 autonomy anyway."
+    echo "         px4_autonomy_mode and bridges will keep waiting for PX4 data."
+    break
+  fi
   sleep 1
 done
-echo "/fmu topics detected."
+if timeout 5 ros2 topic list 2>/dev/null | grep -q '^/fmu/'; then
+  echo "/fmu topics detected."
+fi
 sleep 1
 exec "${WS_DIR}/.runtime/start_ros2_autonomy.sh"
 EOF
@@ -532,11 +665,43 @@ if [[ "${SIM_BACKEND}" == "gazebo-classic" ]]; then
   terminal_total=5
 fi
 
+component_titles=("PX4 SITL + Gazebo")
+component_scripts=("${WS_DIR}/.runtime/start_px4_sitl.sh")
+component_logs=("${WS_DIR}/.runtime/logs/px4.log")
+
+if [[ "${SIM_BACKEND}" == "gazebo-classic" ]]; then
+  component_titles+=("Gazebo GUI")
+  component_scripts+=("${WS_DIR}/.runtime/start_gazebo_gui.sh")
+  component_logs+=("${WS_DIR}/.runtime/logs/gzclient.log")
+fi
+
+component_titles+=("MicroXRCEAgent")
+component_scripts+=("${WS_DIR}/.runtime/start_agent.sh")
+component_logs+=("${WS_DIR}/.runtime/logs/agent.log")
+
+component_titles+=("QGroundControl")
+component_scripts+=("${WS_DIR}/.runtime/wait_for_qgc_start.sh")
+component_logs+=("${WS_DIR}/.runtime/logs/qgc.log")
+
+component_titles+=("ROS2 Autonomy")
+component_scripts+=("${WS_DIR}/.runtime/wait_for_fmu.sh")
+component_logs+=("${WS_DIR}/.runtime/logs/ros2.log")
+
+terminal_command() {
+  local script_path="$1"
+  local log_path="$2"
+  if [[ "${KEEP_TERMINALS_OPEN}" == "true" ]]; then
+    printf '"%s" 2>&1 | tee "%s"; exec bash' "${script_path}" "${log_path}"
+  else
+    printf '"%s" 2>&1 | tee "%s"' "${script_path}" "${log_path}"
+  fi
+}
+
 run_in_terminal() {
   local title="$1"
   local script_path="$2"
   local log_path="$3"
-  gnome-terminal --title="${title}" -- bash -c "\"${script_path}\" 2>&1 | tee \"${log_path}\"; exec bash"
+  gnome-terminal --title="${title}" -- bash -c "$(terminal_command "${script_path}" "${log_path}")"
 }
 
 append_terminal_tab() {
@@ -544,55 +709,72 @@ append_terminal_tab() {
   local title="$2"
   local script_path="$3"
   local log_path="$4"
-  _args_ref+=(--tab --title="${title}" -- bash -c "\"${script_path}\" 2>&1 | tee \"${log_path}\"; exec bash")
+  _args_ref+=(--tab --title="${title}" -- bash -c "$(terminal_command "${script_path}" "${log_path}")")
+}
+
+run_in_tmux() {
+  local session_name="px4-sim"
+  if tmux has-session -t "${session_name}" 2>/dev/null; then
+    tmux kill-session -t "${session_name}"
+  fi
+
+  tmux new-session -d -s "${session_name}" -n "PX4" \
+    "bash -lc '\"${component_scripts[0]}\" 2>&1 | tee \"${component_logs[0]}\"'"
+
+  local i
+  for ((i = 1; i < ${#component_titles[@]}; ++i)); do
+    tmux new-window -t "${session_name}" -n "${component_titles[$i]}" \
+      "bash -lc '\"${component_scripts[$i]}\" 2>&1 | tee \"${component_logs[$i]}\"'"
+    sleep 1
+  done
+
+  echo ">>> tmux session started: ${session_name}"
+  echo ">>> Attach with: tmux attach -t ${session_name}"
+}
+
+run_headless() {
+  local i
+  if ! command -v script >/dev/null 2>&1; then
+    echo "script(1) not found. Headless PX4 needs a pseudo-terminal; install util-linux or use TERMINAL_LAYOUT=windows/tabs."
+    exit 1
+  fi
+
+  for ((i = 0; i < ${#component_titles[@]}; ++i)); do
+    if [[ "${component_titles[$i]}" == "Gazebo GUI" || "${component_titles[$i]}" == "QGroundControl" ]]; then
+      echo ">>> 跳过 GUI 组件（headless）: ${component_titles[$i]}"
+      continue
+    fi
+    echo ">>> 后台启动: ${component_titles[$i]}"
+    if [[ "${component_titles[$i]}" == "PX4 SITL + Gazebo" ]]; then
+      nohup setsid script -q -f -c "\"${component_scripts[$i]}\"" "${component_logs[$i]}" >/dev/null 2>&1 &
+    else
+      nohup setsid bash -lc 'exec "$1"' _ "${component_scripts[$i]}" > "${component_logs[$i]}" 2>&1 &
+    fi
+    echo "$!" > "${component_logs[$i]}.pid"
+    sleep 1
+  done
 }
 
 echo ">>> 启动 ${terminal_total} 个组件，终端布局: ${TERMINAL_LAYOUT}"
 
 if [[ "${TERMINAL_LAYOUT}" == "windows" ]]; then
-  echo ">>> 启动终端 1/${terminal_total}: PX4 SITL + Gazebo-Classic (${PX4_MODEL})"
-  run_in_terminal "PX4 SITL + Gazebo" "${WS_DIR}/.runtime/start_px4_sitl.sh" "${WS_DIR}/.runtime/logs/px4.log"
-  sleep 3
-
-  if [[ "${SIM_BACKEND}" == "gazebo-classic" ]]; then
-    echo ">>> 启动终端 2/${terminal_total}: Gazebo GUI"
-    run_in_terminal "Gazebo GUI" "${WS_DIR}/.runtime/start_gazebo_gui.sh" "${WS_DIR}/.runtime/logs/gzclient.log"
+  for ((i = 0; i < ${#component_titles[@]}; ++i)); do
+    echo ">>> 启动窗口 $((i + 1))/${#component_titles[@]}: ${component_titles[$i]}"
+    run_in_terminal "${component_titles[$i]}" "${component_scripts[$i]}" "${component_logs[$i]}"
     sleep 2
-  fi
-
-  agent_index=2
-  qgc_index=3
-  ros2_index=4
-  if [[ "${SIM_BACKEND}" == "gazebo-classic" ]]; then
-    agent_index=3
-    qgc_index=4
-    ros2_index=5
-  fi
-
-  echo ">>> 启动终端 ${agent_index}/${terminal_total}: MicroXRCEAgent (端口 ${AGENT_PORT})"
-  run_in_terminal "MicroXRCEAgent" "${WS_DIR}/.runtime/start_agent.sh" "${WS_DIR}/.runtime/logs/agent.log"
-  sleep 2
-
-  echo ">>> 启动终端 ${qgc_index}/${terminal_total}: QGroundControl"
-  run_in_terminal "QGroundControl" "${WS_DIR}/.runtime/wait_for_qgc_start.sh" "${WS_DIR}/.runtime/logs/qgc.log"
-  sleep 2
-
-  echo ">>> 启动终端 ${ros2_index}/${terminal_total}: ROS2 Autonomy（等待 /fmu 就绪后启动）"
-  run_in_terminal "ROS2 Autonomy" "${WS_DIR}/.runtime/wait_for_fmu.sh" "${WS_DIR}/.runtime/logs/ros2.log"
-else
+  done
+elif [[ "${TERMINAL_LAYOUT}" == "tabs" ]]; then
   terminal_args=()
-  append_terminal_tab terminal_args "PX4 SITL" "${WS_DIR}/.runtime/start_px4_sitl.sh" "${WS_DIR}/.runtime/logs/px4.log"
-
-  if [[ "${SIM_BACKEND}" == "gazebo-classic" ]]; then
-    append_terminal_tab terminal_args "Gazebo GUI" "${WS_DIR}/.runtime/start_gazebo_gui.sh" "${WS_DIR}/.runtime/logs/gzclient.log"
-  fi
-
-  append_terminal_tab terminal_args "MicroXRCEAgent" "${WS_DIR}/.runtime/start_agent.sh" "${WS_DIR}/.runtime/logs/agent.log"
-  append_terminal_tab terminal_args "QGroundControl" "${WS_DIR}/.runtime/wait_for_qgc_start.sh" "${WS_DIR}/.runtime/logs/qgc.log"
-  append_terminal_tab terminal_args "ROS2 Autonomy" "${WS_DIR}/.runtime/wait_for_fmu.sh" "${WS_DIR}/.runtime/logs/ros2.log"
+  for ((i = 0; i < ${#component_titles[@]}; ++i)); do
+    append_terminal_tab terminal_args "${component_titles[$i]}" "${component_scripts[$i]}" "${component_logs[$i]}"
+  done
 
   echo ">>> 启动单个 GNOME Terminal 窗口，并在其中创建 ${terminal_total} 个标签页"
   gnome-terminal "${terminal_args[@]}"
+elif [[ "${TERMINAL_LAYOUT}" == "tmux" ]]; then
+  run_in_tmux
+else
+  run_headless
 fi
 
 # ============ 输出提示 ============
@@ -617,11 +799,17 @@ $(if [[ "${SIM_BACKEND}" == "gazebo-classic" ]]; then echo "  标签页/终端 -
   - 局部绕障:    ${ENABLE_LOCAL_AVOIDANCE}
   - Livox:       ${USE_LIVOX}
   - FAST-LIO2:   ${USE_FASTLIO}
+  - Nav2:        ${USE_NAV2}
+  - 控制源:      ${CONTROL_SOURCE}
+  - Nav2 odom:   ${NAV2_ODOM_SOURCE}
+  - Nav2 cmd:    ${NAV2_CMD_VEL_TOPIC}
+  - Nav2 高度:   ${NAV2_FIXED_ALTITUDE_M} m
+  - Nav2 map:    ${NAV2_CLOUD_TOPIC} -> /map
   - 点云输入:    ${POINTCLOUD_TOPIC}
 
-终端布局:       ${TERMINAL_LAYOUT}（tabs=单窗口多标签，windows=多窗口）
-Gazebo 界面:    自动启动（gzserver + 独立标签页/终端中的 gzclient）
-QGC 界面:       自动启动
+终端布局:       ${TERMINAL_LAYOUT}（windows=多窗口，tabs=单窗口多标签，tmux/headless=无桌面验证）
+Gazebo 界面:    $(if [[ "${TERMINAL_LAYOUT}" == "headless" ]]; then echo "headless 模式跳过 GUI，仅启动 gzserver"; else echo "自动启动（gzserver + 独立标签页/终端中的 gzclient）"; fi)
+QGC 界面:       $(if [[ "${TERMINAL_LAYOUT}" == "headless" ]]; then echo "headless 模式跳过"; else echo "自动启动"; fi)
 
 等待 Gazebo 加载完成后:
   1. 在 QGC 中连接（自动检测）
@@ -641,6 +829,12 @@ QGC 界面:       自动启动
 
   # 启用 FAST-LIO2（需要真实 Livox/MID360 数据或等价 /livox/lidar + /livox/imu 输入）
   USE_FASTLIO=true USE_LIVOX=true ./scripts/start_px4_sim.sh
+
+  # 启用 Nav2 固定高度规划链路（需要 FAST-LIO2 点云/里程计和 Nav2/octomap 依赖）
+  USE_FASTLIO=true USE_NAV2=true ./scripts/start_px4_sim.sh
+
+  # 无桌面窗口验证
+  TERMINAL_LAYOUT=headless ./scripts/start_px4_sim.sh
 
 停止: 关闭终端窗口即可
 ================================================================
