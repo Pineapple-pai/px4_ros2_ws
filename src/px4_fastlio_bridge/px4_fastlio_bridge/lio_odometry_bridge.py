@@ -8,6 +8,7 @@ from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2
+from std_msgs.msg import Header
 import tf2_ros
 
 
@@ -78,6 +79,11 @@ class LioOdometryBridge(Node):
         self.declare_parameter("nav2_odom_frame_id", "odom")
         self.declare_parameter("nav2_base_frame_id", "base_link")
         self.declare_parameter("publish_nav2_tf", True)
+        self.declare_parameter("enable_sanity_check", True)
+        self.declare_parameter("max_position_norm_m", 100.0)
+        self.declare_parameter("max_position_delta_m", 2.0)
+        self.declare_parameter("max_velocity_m_s", 5.0)
+        self.declare_parameter("reset_after_rejects", 50)
 
         input_odom_topic = self.get_parameter("input_odom_topic").value
         output_odom_topic = self.get_parameter("output_odom_topic").value
@@ -94,6 +100,14 @@ class LioOdometryBridge(Node):
         self._nav2_odom_frame_id = self.get_parameter("nav2_odom_frame_id").value
         self._nav2_base_frame_id = self.get_parameter("nav2_base_frame_id").value
         self._publish_nav2_tf = bool(self.get_parameter("publish_nav2_tf").value)
+        self._enable_sanity_check = bool(self.get_parameter("enable_sanity_check").value)
+        self._max_position_norm_m = float(self.get_parameter("max_position_norm_m").value)
+        self._max_position_delta_m = float(self.get_parameter("max_position_delta_m").value)
+        self._max_velocity_m_s = float(self.get_parameter("max_velocity_m_s").value)
+        self._reset_after_rejects = max(1, int(self.get_parameter("reset_after_rejects").value))
+        self._last_raw_position: Tuple[float, float, float] | None = None
+        self._last_raw_stamp_s: float | None = None
+        self._consecutive_rejects = 0
 
         self._odom_pub = self.create_publisher(Odometry, output_odom_topic, 10)
         self._nav2_odom_pub = self.create_publisher(Odometry, output_nav2_odom_topic, 10)
@@ -114,6 +128,15 @@ class LioOdometryBridge(Node):
         )
 
     def _handle_odom(self, msg: Odometry) -> None:
+        raw_position = (
+            float(msg.pose.pose.position.x),
+            float(msg.pose.pose.position.y),
+            float(msg.pose.pose.position.z),
+        )
+        stamp_s = float(msg.header.stamp.sec) + (float(msg.header.stamp.nanosec) * 1e-9)
+        if not self._lio_sample_is_sane(raw_position, stamp_s):
+            return
+
         odom = Odometry()
         odom.header = msg.header
         odom.header.frame_id = self._output_frame_id
@@ -173,17 +196,89 @@ class LioOdometryBridge(Node):
         if self._publish_nav2_tf:
             self._publish_nav2_odom_tf(nav2_odom)
 
+    def _lio_sample_is_sane(self, position: Tuple[float, float, float], stamp_s: float) -> bool:
+        if not self._enable_sanity_check:
+            return True
+
+        if not all(math.isfinite(value) for value in position):
+            self._reject_lio_sample("non-finite position", reset_baseline=False)
+            return False
+
+        position_norm = math.sqrt(sum(value * value for value in position))
+        if self._max_position_norm_m > 0.0 and position_norm > self._max_position_norm_m:
+            self._reject_lio_sample(
+                f"position norm {position_norm:.2f} m exceeds {self._max_position_norm_m:.2f} m",
+                reset_baseline=False,
+            )
+            return False
+
+        if self._last_raw_position is None or self._last_raw_stamp_s is None:
+            self._accept_lio_sample(position, stamp_s)
+            return True
+
+        delta = math.sqrt(
+            sum((position[index] - self._last_raw_position[index]) ** 2 for index in range(3))
+        )
+        dt = max(1e-3, stamp_s - self._last_raw_stamp_s)
+        speed = delta / dt
+        if self._max_position_delta_m > 0.0 and delta > self._max_position_delta_m:
+            self._reject_lio_sample(
+                f"position jump {delta:.2f} m exceeds {self._max_position_delta_m:.2f} m",
+                reset_baseline=True,
+            )
+            return False
+        if self._max_velocity_m_s > 0.0 and speed > self._max_velocity_m_s:
+            self._reject_lio_sample(
+                f"implied speed {speed:.2f} m/s exceeds {self._max_velocity_m_s:.2f} m/s",
+                reset_baseline=True,
+            )
+            return False
+
+        self._accept_lio_sample(position, stamp_s)
+        return True
+
+    def _accept_lio_sample(self, position: Tuple[float, float, float], stamp_s: float) -> None:
+        self._last_raw_position = position
+        self._last_raw_stamp_s = stamp_s
+        self._consecutive_rejects = 0
+
+    def _reject_lio_sample(self, reason: str, *, reset_baseline: bool) -> None:
+        self._consecutive_rejects += 1
+        self.get_logger().warn(
+            f"Dropping FAST-LIO odometry sample: {reason}",
+            throttle_duration_sec=1.0,
+        )
+        if reset_baseline and self._consecutive_rejects >= self._reset_after_rejects:
+            self._last_raw_position = None
+            self._last_raw_stamp_s = None
+            self._consecutive_rejects = 0
+            self.get_logger().warn("FAST-LIO sanity gate baseline reset after repeated rejects.")
+
     def _handle_map(self, msg: PointCloud2) -> None:
-        relayed = PointCloud2()
-        relayed = msg
+        relayed = self._copy_cloud(msg)
         relayed.header.frame_id = self._nav2_map_frame_id
         self._map_pub.publish(relayed)
 
     def _handle_registered_cloud(self, msg: PointCloud2) -> None:
-        relayed = PointCloud2()
-        relayed = msg
+        relayed = self._copy_cloud(msg)
         relayed.header.frame_id = self._nav2_map_frame_id
         self._registered_cloud_pub.publish(relayed)
+
+    @staticmethod
+    def _copy_cloud(msg: PointCloud2) -> PointCloud2:
+        cloud = PointCloud2()
+        cloud.header = Header()
+        cloud.header.stamp = msg.header.stamp
+        cloud.header.frame_id = msg.header.frame_id
+        cloud.height = msg.height
+        cloud.width = msg.width
+        cloud.fields = msg.fields
+        cloud.is_bigendian = msg.is_bigendian
+        cloud.point_step = msg.point_step
+        cloud.row_step = msg.row_step
+        cloud.data = msg.data
+        cloud.is_dense = msg.is_dense
+        return cloud
 
     def _publish_static_map_to_odom(self) -> None:
         if not self._publish_nav2_tf:

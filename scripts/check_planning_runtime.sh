@@ -23,6 +23,33 @@ if ! timeout 5 ros2 topic list >/dev/null 2>&1; then
   fail "ROS 2 graph is not reachable. Make sure the autonomy stack is running in another terminal."
 fi
 
+if ! grep -q "TRAJECTORY_STATUS_COMPLETED" "${WS_DIR}/src/ego_planner_swarm_ros2_upstream/src/planner/plan_manage/src/traj_server.cpp"; then
+  fail "ego_planner traj_server does not appear to emit TRAJECTORY_STATUS_COMPLETED."
+fi
+pass "ego_planner traj_server completion handoff logic present"
+
+if ! grep -q "_control_suspended" "${WS_DIR}/src/px4_trajectory_interface/src/trajectory_interface.cpp"; then
+  fail "trajectory_interface does not appear to suspend Offboard control after completion."
+fi
+
+if ! grep -q "TRAJECTORY_STATUS_COMPLETED" "${WS_DIR}/src/px4_trajectory_interface/src/trajectory_interface.cpp"; then
+  fail "trajectory_interface does not appear to handle TRAJECTORY_STATUS_COMPLETED."
+fi
+pass "trajectory_interface completion handoff logic present"
+
+if grep -q "mode_request_hold_s" "${WS_DIR}/src/px4_nav2_bridge/px4_nav2_bridge/qgc_reposition_goal_bridge.py"; then
+  fail "qgc_reposition_goal_bridge still contains the removed mode_request_hold_s logic."
+fi
+pass "qgc_reposition_goal_bridge release logic present"
+
+if ! grep -q "auto_rtl_after_finish" "${WS_DIR}/src/px4_autonomy_mode/include/px4_autonomy_mode/autonomy_mode.hpp"; then
+  fail "px4_autonomy_mode missing auto_rtl_after_finish support."
+fi
+
+if ! grep -q "Switch to RTL from QGC to recover the vehicle" "${WS_DIR}/src/px4_autonomy_mode/include/px4_autonomy_mode/autonomy_mode.hpp"; then
+  fail "px4_autonomy_mode does not advertise QGC RTL recovery when auto_rtl_after_finish is enabled."
+fi
+
 required_nodes=(
   "/qgc_ego_goal_bridge"
   "/trajectory_interface"

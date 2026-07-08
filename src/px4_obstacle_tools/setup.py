@@ -26,6 +26,7 @@ setup(
             "laserscan_min_distance = px4_obstacle_tools.laserscan_min_distance:main",
             "obstacle_distance_sim = px4_obstacle_tools.obstacle_distance_sim:main",
             "pointcloud_min_distance = px4_obstacle_tools.pointcloud_min_distance:main",
+            "pointcloud_relay = px4_obstacle_tools.pointcloud_relay:main",
             "laserscan_to_pointcloud = px4_obstacle_tools.laserscan_to_pointcloud:main",
             "gz_scan_to_pointcloud = px4_obstacle_tools.gz_scan_to_pointcloud:main",
             "gz_six_direction_distance = px4_obstacle_tools.gz_six_direction_distance:main",

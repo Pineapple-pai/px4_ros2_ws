@@ -16,7 +16,9 @@
             time_offset_lidar_to_imu: 0.0
 
         preprocess:
-            lidar_type: 4
+            # Gazebo depth bridge publishes plain PointCloud2 with xyz only.
+            # Use FAST-LIO's generic PointCloud2 handler instead of Livox MID360 parsing.
+            lidar_type: 0
             scan_line: 1
             blind: 0.2
             timestamp_unit: 3

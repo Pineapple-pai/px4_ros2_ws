@@ -349,7 +349,7 @@ waypoints:
   - {x: 2.00, y: 2.00, z: -2.00, hold_time: 3.0}
 ```
 
-`auto_rtl_after_finish` 当前不会真的发送 RTL 指令，只打印提示。恢复方式仍建议从 QGC 或遥控器切 `Land/RTL/Position`。
+`auto_rtl_after_finish` 目前仍建议由 QGC/遥控器手动接管 `Land/RTL/Position`。如果你启用了额外的 RTL 自动化链路，请以对应 launch / bridge 的运行时日志为准。
 
 ## 任务文件解析
 
@@ -669,7 +669,7 @@ front_distance <= obstacle_abort_distance_m
 completed(px4_ros2::Result::ModeFailureOther);
 ```
 
-这不会自动降落，也不会自动 RTL。它只是结束 ROS 2 自主模式。恢复动作仍应通过 PX4/QGC/遥控器完成。
+这会结束 ROS 2 自主模式；是否进一步切 `Land/RTL` 取决于你当前启用的上层接管链路。恢复动作仍建议保留 PX4/QGC/遥控器手动接管能力。
 
 ## 感知工具包 px4_obstacle_tools
 
@@ -940,7 +940,7 @@ std_msgs/msg/Float32
 - YAML 顶层参数目前覆盖的是代码中已显式支持的字段；如果新增自定义字段，还需要在 `applyMissionFileParameters()` 中接入。
 - 每个航点的独立速度、停留时间已经进入 `Px4AutonomyMode`；动作类型还没有进入航点推进逻辑。
 - 运行时 `PoseArray` 只能携带位置，不携带逐航点速度/停留时间。
-- `auto_rtl_after_finish` 当前不真正切 RTL。
+- `auto_rtl_after_finish` 是否真正切 RTL，取决于当前启用的上层接管链路和运行时模式配置。
 - `up/down` 距离暂未纳入三维绕行。
 - 局部绕行是规则式临时航点，不是全局路径规划。
 - 没有任务状态发布话题，当前主要靠日志观察。

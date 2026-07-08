@@ -22,6 +22,7 @@ setup(
     entry_points={
         "console_scripts": [
             "lio_odometry_bridge = px4_fastlio_bridge.lio_odometry_bridge:main",
+            "mid360_sim_bridge = px4_fastlio_bridge.mid360_sim_bridge:main",
             "px4_imu_bridge = px4_fastlio_bridge.px4_imu_bridge:main",
         ],
     },

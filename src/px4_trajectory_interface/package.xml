@@ -12,10 +12,13 @@
   <buildtool_export_depend>eigen3_cmake_module</buildtool_export_depend>
 
   <depend>Eigen3</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>px4_msgs</depend>
   <depend>px4_ros2_cpp</depend>
   <depend>quadrotor_msgs</depend>
   <depend>rclcpp</depend>
+  <exec_depend>rviz2</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

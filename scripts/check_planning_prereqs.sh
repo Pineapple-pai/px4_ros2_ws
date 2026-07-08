@@ -51,6 +51,7 @@ installed_pkgs=(
   px4_nav2_bridge
   px4_fastlio_bridge
   px4_trajectory_interface
+  ego_planner
 )
 
 for pkg in "${installed_pkgs[@]}"; do
@@ -59,6 +60,11 @@ for pkg in "${installed_pkgs[@]}"; do
   fi
 done
 pass "Bridge packages are present in ROS environment"
+
+if ! ros2 pkg prefix ego_planner >/dev/null 2>&1; then
+  fail "Installed ROS package not found in environment: ego_planner"
+fi
+pass "ego_planner package is present in ROS environment"
 
 if [[ -f "${LIVOX_SDK2_PREFIX}/lib/liblivox_lidar_sdk_shared.so" ]]; then
   pass "Livox-SDK2 shared library found under ${LIVOX_SDK2_PREFIX}"

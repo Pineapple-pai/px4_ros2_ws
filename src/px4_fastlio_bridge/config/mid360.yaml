@@ -1,7 +1,7 @@
 /**:
     ros__parameters:
         feature_extract_enable: false
-        point_filter_num: 3
+        point_filter_num: 1
         max_iteration: 3
         filter_size_surf: 0.5
         filter_size_map: 0.5
@@ -16,9 +16,11 @@
             time_offset_lidar_to_imu: 0.0
 
         preprocess:
-            lidar_type: 1
-            scan_line: 4
-            blind: 0.5
+            # Gazebo ray sensor publishes a whole-frame PointCloud2 snapshot.
+            # Use the generic handler instead of MID360 scan-line deskewing.
+            lidar_type: 0
+            scan_line: 1
+            blind: 0.2
             timestamp_unit: 3
             scan_rate: 10
 
@@ -29,8 +31,10 @@
             b_gyr_cov: 0.0001
             fov_degree: 360.0
             det_range: 100.0
-            extrinsic_est_en: true
-            extrinsic_T: [-0.011, -0.02329, 0.04412]
+            # Sim model: mid360_link is fixed to iris::base_link with pose
+            # 0 0 0.08 0 0 0, so use a fixed LiDAR pose in the IMU/body frame.
+            extrinsic_est_en: false
+            extrinsic_T: [0.0, 0.0, 0.08]
             extrinsic_R: [1.0, 0.0, 0.0,
                           0.0, 1.0, 0.0,
                           0.0, 0.0, 1.0]

@@ -7,12 +7,13 @@ QGC_DIR="${QGC_DIR:-/home/p/下载/PX4/qgc-daily-root/squashfs-root}"
 AGENT_PORT="${AGENT_PORT:-8888}"
 TERMINAL_LAYOUT="${TERMINAL_LAYOUT:-windows}"
 KEEP_TERMINALS_OPEN="${KEEP_TERMINALS_OPEN:-true}"
+LAUNCH_AUTONOMY_STACK="${LAUNCH_AUTONOMY_STACK:-true}"
 
 # ============ 仿真配置 ============
 # 仿真后端: gazebo-classic 或 gz（新版 Gazebo Ignition）
 SIM_BACKEND="${SIM_BACKEND:-gazebo-classic}"
 # PX4 机型模型
-PX4_MODEL="${PX4_MODEL:-iris_rplidar}"
+PX4_MODEL="${PX4_MODEL:-iris_mid360_sim}"
 # Gazebo 世界。默认使用本仓库的房间环境，方便雷达测距一启动就看到障碍物。
 PX4_WORLD="${PX4_WORLD:-room_obstacles}"
 
@@ -22,6 +23,9 @@ PX4_HOME_LON="${PX4_HOME_LON:-}"
 PX4_HOME_ALT="${PX4_HOME_ALT:-}"
 PX4_HOME_YAW="${PX4_HOME_YAW:-}"
 USE_SYSTEM_GEOLOCATION="${USE_SYSTEM_GEOLOCATION:-false}"
+PX4_DISABLE_MAG_CHECKS="${PX4_DISABLE_MAG_CHECKS:-false}"
+PX4_DISABLE_HEALTH_FAILSAFE_CHECKS="${PX4_DISABLE_HEALTH_FAILSAFE_CHECKS:-true}"
+PX4_DISABLE_LOW_BATTERY_FAILSAFE="${PX4_DISABLE_LOW_BATTERY_FAILSAFE:-true}"
 
 # ============ 自主模式配置 ============
 MISSION_SIZE_M="${MISSION_SIZE_M:-2.5}"
@@ -63,6 +67,7 @@ USE_SIM_TIME="${USE_SIM_TIME:-false}"
 USE_FASTLIO="${USE_FASTLIO:-false}"
 USE_LIVOX="${USE_LIVOX:-false}"
 USE_NAV2="${USE_NAV2:-false}"
+ENABLE_GAZEBO_ROS_SENSORS="${ENABLE_GAZEBO_ROS_SENSORS:-true}"
 LIVOX_CONFIG="${LIVOX_CONFIG:-${WS_DIR}/src/livox_ros_driver2/config/MID360_config.json}"
 FASTLIO_CONFIG_PATH="${FASTLIO_CONFIG_PATH:-}"
 FASTLIO_CONFIG_FILE="${FASTLIO_CONFIG_FILE:-mid360.yaml}"
@@ -87,11 +92,18 @@ NAV2_REQUIRED_NAV_STATE="${NAV2_REQUIRED_NAV_STATE:-23}"
 NAV2_STATUS_TIMEOUT_S="${NAV2_STATUS_TIMEOUT_S:-1.0}"
 QGC_AUTO_REQUEST_ROS2_MODE="${QGC_AUTO_REQUEST_ROS2_MODE:-true}"
 QGC_MODE_REQUEST_PERIOD_S="${QGC_MODE_REQUEST_PERIOD_S:-0.25}"
-QGC_MODE_REQUEST_HOLD_S="${QGC_MODE_REQUEST_HOLD_S:-30.0}"
 QGC_REPOSITION_GOAL_BRIDGE="${QGC_REPOSITION_GOAL_BRIDGE:-true}"
 NAV2_ODOM_SOURCE="${NAV2_ODOM_SOURCE:-px4_local}"
-NAV2_CLOUD_TOPIC="${NAV2_CLOUD_TOPIC:-/autonomy/cloud_registered}"
+NAV2_CLOUD_TOPIC="${NAV2_CLOUD_TOPIC:-/autonomy/nav2_cloud}"
+LAUNCH_NAV2_POINTCLOUD_RELAY="${LAUNCH_NAV2_POINTCLOUD_RELAY:-true}"
+NAV2_CLOUD_INPUT_TOPIC="${NAV2_CLOUD_INPUT_TOPIC:-/livox/lidar}"
+NAV2_CLOUD_OUTPUT_FRAME_ID="${NAV2_CLOUD_OUTPUT_FRAME_ID:-base_link}"
+NAV2_CLOUD_MAX_RATE_HZ="${NAV2_CLOUD_MAX_RATE_HZ:-5.0}"
+NAV2_CLOUD_POINT_STEP_STRIDE="${NAV2_CLOUD_POINT_STEP_STRIDE:-3}"
+NAV2_CLOUD_MAX_POINTS="${NAV2_CLOUD_MAX_POINTS:-5000}"
 LAUNCH_GZ_SCAN_TO_POINTCLOUD="${LAUNCH_GZ_SCAN_TO_POINTCLOUD:-}"
+LAUNCH_GZ_SCAN_DISTANCE="${LAUNCH_GZ_SCAN_DISTANCE:-false}"
+LAUNCH_GZ_SIX_DIRECTION_DISTANCE="${LAUNCH_GZ_SIX_DIRECTION_DISTANCE:-false}"
 OCTOMAP_RESOLUTION="${OCTOMAP_RESOLUTION:-0.10}"
 OCTOMAP_MIN_Z="${OCTOMAP_MIN_Z:--0.5}"
 OCTOMAP_MAX_Z="${OCTOMAP_MAX_Z:-2.0}"
@@ -179,6 +191,7 @@ fi
 
 PX4_GZ_WORLDS_DIR="${PX4_DIR}/Tools/simulation/gz/worlds"
 WS_WORLDS_DIR="${WS_DIR}/sim/worlds"
+WS_MODELS_DIR="${WS_DIR}/sim/models"
 PX4_GAZEBO_CLASSIC_MODELS_DIR="${PX4_DIR}/Tools/simulation/gazebo-classic/sitl_gazebo-classic/models"
 PX4_GAZEBO_CLASSIC_WORLDS_DIR="${PX4_DIR}/Tools/simulation/gazebo-classic/sitl_gazebo-classic/worlds"
 
@@ -249,7 +262,7 @@ install_custom_worlds() {
     if compgen -G "${WS_WORLDS_DIR}/*.sdf" >/dev/null; then
       cp -u "${WS_WORLDS_DIR}"/*.sdf "${PX4_GZ_WORLDS_DIR}/"
     fi
-  else
+  elif [[ "${SIM_BACKEND}" == "gz" ]]; then
     echo "PX4 Gazebo worlds directory not found: ${PX4_GZ_WORLDS_DIR}"
   fi
 
@@ -263,6 +276,19 @@ install_custom_worlds() {
   else
     echo "PX4 Gazebo Classic worlds directory not found: ${PX4_GAZEBO_CLASSIC_WORLDS_DIR}"
   fi
+}
+
+install_custom_models() {
+  if [[ ! -d "${WS_MODELS_DIR}" || ! -d "${PX4_GAZEBO_CLASSIC_MODELS_DIR}" ]]; then
+    return 0
+  fi
+
+  local model_dir
+  for model_dir in "${WS_MODELS_DIR}"/*; do
+    [[ -d "${model_dir}" ]] || continue
+    rm -rf "${PX4_GAZEBO_CLASSIC_MODELS_DIR}/$(basename "${model_dir}")"
+    cp -r "${model_dir}" "${PX4_GAZEBO_CLASSIC_MODELS_DIR}/"
+  done
 }
 
 resolve_system_geolocation() {
@@ -301,9 +327,13 @@ resolve_system_geolocation() {
 
 # ============ 执行预处理 ============
 resolve_system_geolocation
+echo ">>> 预处理: install_custom_worlds"
 install_custom_worlds
+echo ">>> 预处理: install_custom_models"
+install_custom_models
 
 if [[ "${SIM_BACKEND}" == "gazebo-classic" ]]; then
+  echo ">>> 准备 Gazebo Classic 启动参数"
   CLASSIC_MAKE_TARGET="gazebo-classic_${PX4_MODEL}"
   case "${PX4_WORLD}" in
     empty|none)
@@ -326,6 +356,7 @@ fi
 
 mkdir -p "${WS_DIR}/.runtime"
 mkdir -p "${WS_DIR}/.runtime/logs"
+echo ">>> 已创建运行时目录: ${WS_DIR}/.runtime"
 
 # ============ 生成环境脚本 ============
 cat > "${WS_DIR}/.runtime/ros2_autonomy_env.sh" <<EOF
@@ -337,32 +368,27 @@ set -u
 EOF
 
 if [[ "${SIM_BACKEND}" == "gazebo-classic" ]]; then
-  GZ_SCAN_DISTANCE_ARG="launch_gz_scan_distance:=true"
+  GZ_SCAN_DISTANCE_ARG="launch_gz_scan_distance:=${LAUNCH_GZ_SCAN_DISTANCE}"
 
-  # iris_rplidar.sdf 中包含了两个激光雷达模型：
-  #   1) lidar  (model://lidar)      → samples=1, 使用 PX4 原生 libgazebo_lidar_plugin.so
-  #   2) rplidar (model://rplidar)   → samples=360, 已改用 libgazebo_lidar_plugin.so（不依赖 ROS）
-  #
-  # rplidar 的激光传感器 samples=360，提供 360° 全方位测距，
-  # libgazebo_lidar_plugin.so 会将所有射线的距离中的最小值发布为 Range 消息
-  # （含 current_distance 字段），比 samples=1 的 lidar 模型更适合避障。
-  #
-  # 话题路径：Gazebo Classic 同时暴露 Range 和 LaserScanStamped 话题。
-  # 实测 rplidar 的 360° LaserScanStamped 话题稳定输出完整 ranges：
-  #   /gazebo/<world>/<root_model>/rplidar/link/laser/scan
+  # 当前默认模型 iris_mid360_sim 使用单个 ray LiDAR 传感器 mid360_link/mid360。
+  # Gazebo Classic transport 侧可直接读取其 scan 话题：
+  #   /gazebo/<world>/<root_model>/mid360_link/mid360/scan
+  # 这条话题用于障碍距离诊断；FAST-LIO 主输入仍走 ROS 侧 /livox/lidar。
   _GZ_WORLD_TOPIC="${PX4_WORLD}"
   if [[ "${PX4_WORLD}" == "empty" || "${PX4_WORLD}" == "none" ]]; then
     _GZ_WORLD_TOPIC="default"
   fi
-  _DEFAULT_TOPIC="/gazebo/${_GZ_WORLD_TOPIC}/${PX4_MODEL}/rplidar/link/laser/scan"
+  _DEFAULT_TOPIC="/gazebo/${_GZ_WORLD_TOPIC}/${PX4_MODEL}/mid360_link/mid360/scan"
   GZ_SCAN_TOPIC_ARG="gz_scan_topic:=${GZ_SCAN_TOPIC:-${_DEFAULT_TOPIC}}"
 
-  # gazebo-classic 模式下 start_px4_sitl.sh 会 unset ROS_VERSION，
-  # 导致 libgazebo_ros_laser.so 无法发布 ROS2 话题 /scan，
-  # 因此只能通过 gz_scan_min_distance 读取 Gazebo 原生传输层主题。
+  # gazebo-classic 模式下仍通过 gz_scan_min_distance 读取 Gazebo 原生传输层主题。
   ENABLE_LASERSCAN_MIN_DISTANCE="false"
   if [[ -z "${LAUNCH_GZ_SCAN_TO_POINTCLOUD}" ]]; then
-    LAUNCH_GZ_SCAN_TO_POINTCLOUD="${USE_NAV2}"
+    if [[ "${USE_FASTLIO}" == "true" ]]; then
+      LAUNCH_GZ_SCAN_TO_POINTCLOUD="false"
+    else
+      LAUNCH_GZ_SCAN_TO_POINTCLOUD="${USE_NAV2}"
+    fi
   fi
 else
   GZ_SCAN_DISTANCE_ARG="launch_gz_scan_distance:=false"
@@ -413,10 +439,15 @@ exec ros2 launch px4_autonomy_bringup autonomy_stack.launch.py \\
   nav2_status_timeout_s:=${NAV2_STATUS_TIMEOUT_S} \\
   qgc_auto_request_ros2_mode:=${QGC_AUTO_REQUEST_ROS2_MODE} \\
   qgc_mode_request_period_s:=${QGC_MODE_REQUEST_PERIOD_S} \\
-  qgc_mode_request_hold_s:=${QGC_MODE_REQUEST_HOLD_S} \\
   qgc_reposition_goal_bridge:=${QGC_REPOSITION_GOAL_BRIDGE} \\
   nav2_odom_source:=${NAV2_ODOM_SOURCE} \\
   nav2_cloud_topic:=${NAV2_CLOUD_TOPIC} \\
+  launch_nav2_pointcloud_relay:=${LAUNCH_NAV2_POINTCLOUD_RELAY} \\
+  nav2_cloud_input_topic:=${NAV2_CLOUD_INPUT_TOPIC} \\
+  nav2_cloud_output_frame_id:=${NAV2_CLOUD_OUTPUT_FRAME_ID} \\
+  nav2_cloud_max_rate_hz:=${NAV2_CLOUD_MAX_RATE_HZ} \\
+  nav2_cloud_point_step_stride:=${NAV2_CLOUD_POINT_STEP_STRIDE} \\
+  nav2_cloud_max_points:=${NAV2_CLOUD_MAX_POINTS} \\
   launch_gz_scan_to_pointcloud:=${LAUNCH_GZ_SCAN_TO_POINTCLOUD} \\
   octomap_resolution:=${OCTOMAP_RESOLUTION} \\
   octomap_min_z:=${OCTOMAP_MIN_Z} \\
@@ -439,7 +470,7 @@ exec ros2 launch px4_autonomy_bringup autonomy_stack.launch.py \\
   waypoints_topic:=${WAYPOINTS_TOPIC} \\
   accept_runtime_target:=${ACCEPT_RUNTIME_TARGET} \\
   ${GZ_SCAN_DISTANCE_ARG} \\
-  launch_gz_six_direction_distance:=true \\
+  launch_gz_six_direction_distance:=${LAUNCH_GZ_SIX_DIRECTION_DISTANCE} \\
 EOF
 
 if [[ -n "${GZ_SCAN_TOPIC_ARG}" ]]; then
@@ -507,7 +538,11 @@ set -euo pipefail
 cd "${PX4_DIR}"
 
 # 设置 PX4 SIM 模型和环境变量
-export PX4_SIM_MODEL="${PX4_MODEL}"
+if [[ "${SIM_BACKEND}" == "gazebo-classic" ]]; then
+  export PX4_SIM_MODEL="gazebo-classic_${PX4_MODEL}"
+else
+  export PX4_SIM_MODEL="${PX4_MODEL}"
+fi
 export PX4_GZ_MODEL="${PX4_MODEL}"
 export PX4_SIMULATOR="${SIM_BACKEND}"
 
@@ -541,6 +576,8 @@ export GAZEBO_PLUGIN_PATH="\${GAZEBO_PLUGIN_PATH:-}"
 export GAZEBO_MODEL_PATH="\${GAZEBO_MODEL_PATH:-}"
 export LD_LIBRARY_PATH="\${LD_LIBRARY_PATH:-}"
 source "${PX4_DIR}/Tools/simulation/gazebo-classic/setup_gazebo.bash" "${PX4_DIR}" "${PX4_DIR}/build/px4_sitl_default"
+export GAZEBO_MODEL_PATH="${WS_MODELS_DIR}:\${GAZEBO_MODEL_PATH}"
+export GAZEBO_MODEL_DATABASE_URI=""
 
 if [[ "${PX4_WORLD}" != "empty" && "${PX4_WORLD}" != "none" ]]; then
   export PX4_SIM_WORLD="${PX4_WORLD}"
@@ -560,20 +597,114 @@ if ! timeout 1 xdpyinfo -display "\$DISPLAY" >/dev/null 2>&1; then
   export HEADLESS=1
 fi
 
-# source /opt/ros/humble/setup.bash 会设置 ROS_VERSION=2，
-# 这会导致 sitl_run.sh 检测到 ROS2 并让 gzserver 加载全局 ROS2 插件
-# (-s libgazebo_ros_init.so -s libgazebo_ros_factory.so)。
-# 这些插件在 spawn 模型时需等待 ROS2 初始化，未启动完整 ROS2 环境时会阻塞。
-# 因此需要 unset ROS_VERSION，让 gzserver 以纯 Gazebo 模式运行。
-# rplidar 模型已改用 libgazebo_lidar_plugin.so（原生 Gazebo 插件）。
-unset ROS_VERSION
+if [[ "${ENABLE_GAZEBO_ROS_SENSORS}" != "true" ]]; then
+  # source /opt/ros/humble/setup.bash 会设置 ROS_VERSION=2，
+  # 这会导致 sitl_run.sh 检测到 ROS2 并让 gzserver 加载全局 ROS2 插件
+  # (-s libgazebo_ros_init.so -s libgazebo_ros_factory.so)。
+  # 当我们只需要 Gazebo 原生插件时，unset ROS_VERSION 能避免额外阻塞。
+  unset ROS_VERSION
+fi
 
 # 不依赖 PX4 在后台隐式拉起 gzclient。
 # 改为由本脚本在单独终端显式启动 GUI，避免 GUI 进程静默退出但终端不可见。
 export HEADLESS=1
 export PX4_NO_FOLLOW_MODE=1
 
-exec make px4_sitl ${CLASSIC_MAKE_TARGET}
+cleanup() {
+  local exit_code=\$?
+  if [[ -n "\${SPAWN_PID:-}" ]]; then
+    kill "\${SPAWN_PID}" >/dev/null 2>&1 || true
+    wait "\${SPAWN_PID}" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "\${SIM_PID:-}" ]]; then
+    kill "\${SIM_PID}" >/dev/null 2>&1 || true
+    wait "\${SIM_PID}" >/dev/null 2>&1 || true
+  fi
+  exit "\${exit_code}"
+}
+trap cleanup EXIT INT TERM
+
+SITL_BUILD_DIR="${PX4_DIR}/build/px4_sitl_default"
+SITL_ROOTFS="\${SITL_BUILD_DIR}/rootfs"
+SITL_BIN="\${SITL_BUILD_DIR}/bin/px4"
+if [[ ! -x "\${SITL_BIN}" ]]; then
+  export DONT_RUN=1
+  make px4_sitl ${CLASSIC_MAKE_TARGET}
+  unset DONT_RUN
+else
+  echo "Reusing existing PX4 SITL binary: \${SITL_BIN}"
+fi
+mkdir -p "\${SITL_ROOTFS}"
+
+if [[ -n "\${PX4_SITL_WORLD:-}" ]]; then
+  if [[ -f "${PX4_GAZEBO_CLASSIC_WORLDS_DIR}/\${PX4_SITL_WORLD}.world" ]]; then
+    WORLD_PATH="${PX4_GAZEBO_CLASSIC_WORLDS_DIR}/\${PX4_SITL_WORLD}.world"
+  else
+    WORLD_PATH="\${PX4_SITL_WORLD}"
+  fi
+elif [[ "${PX4_WORLD}" == "none" ]]; then
+  if [[ -f "${PX4_DIR}/Tools/simulation/gazebo-classic/sitl_gazebo-classic/worlds/${PX4_MODEL}.world" ]]; then
+    WORLD_PATH="${PX4_DIR}/Tools/simulation/gazebo-classic/sitl_gazebo-classic/worlds/${PX4_MODEL}.world"
+  else
+    WORLD_PATH="${PX4_DIR}/Tools/simulation/gazebo-classic/sitl_gazebo-classic/worlds/empty.world"
+  fi
+else
+  WORLD_PATH="${PX4_GAZEBO_CLASSIC_WORLDS_DIR}/${PX4_WORLD}.world"
+fi
+
+ROS_ARGS=""
+if [[ -n "\${ROS_VERSION:-}" && "\${ROS_VERSION}" == "2" ]]; then
+  ROS_ARGS="-s libgazebo_ros_init.so -s libgazebo_ros_factory.so"
+fi
+
+echo "Starting gzserver: \${WORLD_PATH}"
+gzserver \${ROS_ARGS} "\${WORLD_PATH}" &
+SIM_PID=\$!
+
+deadline=\$((SECONDS + 30))
+until timeout 2 gz topic -l >/dev/null 2>&1; do
+  if ((SECONDS >= deadline)); then
+    echo "gzserver did not become ready within 30s"
+    exit 1
+  fi
+  sleep 1
+done
+
+MODEL_SDF="${WS_MODELS_DIR}/${PX4_MODEL}/${PX4_MODEL}.sdf"
+if [[ ! -f "\${MODEL_SDF}" ]]; then
+  MODEL_SDF="${PX4_DIR}/Tools/simulation/gazebo-classic/sitl_gazebo-classic/models/${PX4_MODEL}/${PX4_MODEL}.sdf"
+fi
+if [[ ! -f "\${MODEL_SDF}" ]]; then
+  echo "Unable to resolve model SDF for ${PX4_MODEL}"
+  exit 1
+fi
+
+echo "Spawning model via gazebo_ros spawn_entity: \${MODEL_SDF}"
+nohup bash -lc 'source /opt/ros/humble/setup.bash >/dev/null 2>&1 && ros2 run gazebo_ros spawn_entity.py -file "\$1" -entity "\$2" -x 1.01 -y 0.98 -z 0.83 -R 0 -P 0 -Y 0 -timeout 30' _ "\${MODEL_SDF}" "${PX4_MODEL}" > "${WS_DIR}/.runtime/logs/gz_spawn.log" 2>&1 &
+SPAWN_PID=\$!
+echo "Background spawn pid: \${SPAWN_PID}"
+sleep 3
+if ! kill -0 "\${SPAWN_PID}" >/dev/null 2>&1; then
+  wait "\${SPAWN_PID}" >/dev/null 2>&1 || true
+  unset SPAWN_PID
+fi
+
+echo "Launching PX4 binary directly"
+cd "\${SITL_ROOTFS}"
+export PX4_PARAM_SYS_HAS_MAG=1
+if [[ "${PX4_DISABLE_MAG_CHECKS}" == "true" ]]; then
+  export PX4_PARAM_EKF2_MAG_CHECK=0
+  export PX4_PARAM_COM_ARM_MAG_ANG=-1
+  export PX4_PARAM_COM_ARM_MAG_STR=0
+fi
+if [[ "${PX4_DISABLE_HEALTH_FAILSAFE_CHECKS}" == "true" ]]; then
+  export PX4_PARAM_COM_ARM_HFLT_CHK=0
+fi
+if [[ "${PX4_DISABLE_LOW_BATTERY_FAILSAFE}" == "true" ]]; then
+  export PX4_PARAM_COM_LOW_BAT_ACT=0
+fi
+
+exec "\${SITL_BIN}" "\${SITL_BUILD_DIR}/etc"
 EOF
 else
   # 新版 Gazebo (gz)
@@ -603,6 +734,7 @@ export GAZEBO_PLUGIN_PATH="\${GAZEBO_PLUGIN_PATH:-}"
 export GAZEBO_MODEL_PATH="\${GAZEBO_MODEL_PATH:-}"
 export LD_LIBRARY_PATH="\${LD_LIBRARY_PATH:-}"
 source "${PX4_DIR}/Tools/simulation/gazebo-classic/setup_gazebo.bash" "${PX4_DIR}" "${PX4_DIR}/build/px4_sitl_default"
+export GAZEBO_MODEL_PATH="${WS_MODELS_DIR}:\${GAZEBO_MODEL_PATH}"
 
 export DISPLAY="\${DISPLAY:-${DISPLAY:-:0}}"
 export XAUTHORITY="\${XAUTHORITY:-${XAUTHORITY:-}}"
@@ -660,9 +792,12 @@ chmod +x "${WS_DIR}/.runtime/wait_for_qgc_start.sh"
 
 # ============ 启动终端 ============
 
-terminal_total=4
+terminal_total=3
 if [[ "${SIM_BACKEND}" == "gazebo-classic" ]]; then
-  terminal_total=5
+  terminal_total=4
+fi
+if [[ "${LAUNCH_AUTONOMY_STACK}" == "true" ]]; then
+  terminal_total=$((terminal_total + 1))
 fi
 
 component_titles=("PX4 SITL + Gazebo")
@@ -683,9 +818,11 @@ component_titles+=("QGroundControl")
 component_scripts+=("${WS_DIR}/.runtime/wait_for_qgc_start.sh")
 component_logs+=("${WS_DIR}/.runtime/logs/qgc.log")
 
-component_titles+=("ROS2 Autonomy")
-component_scripts+=("${WS_DIR}/.runtime/wait_for_fmu.sh")
-component_logs+=("${WS_DIR}/.runtime/logs/ros2.log")
+if [[ "${LAUNCH_AUTONOMY_STACK}" == "true" ]]; then
+  component_titles+=("ROS2 Autonomy")
+  component_scripts+=("${WS_DIR}/.runtime/wait_for_fmu.sh")
+  component_logs+=("${WS_DIR}/.runtime/logs/ros2.log")
+fi
 
 terminal_command() {
   local script_path="$1"
@@ -746,12 +883,19 @@ run_headless() {
     fi
     echo ">>> 后台启动: ${component_titles[$i]}"
     if [[ "${component_titles[$i]}" == "PX4 SITL + Gazebo" ]]; then
-      nohup setsid script -q -f -c "\"${component_scripts[$i]}\"" "${component_logs[$i]}" >/dev/null 2>&1 &
+      nohup setsid script -q -f -c "${component_scripts[$i]}" "${component_logs[$i]}" >/dev/null 2>&1 &
+      local bg_pid="$!"
     else
-      nohup setsid bash -lc 'exec "$1"' _ "${component_scripts[$i]}" > "${component_logs[$i]}" 2>&1 &
+      nohup setsid "${component_scripts[$i]}" > "${component_logs[$i]}" 2>&1 &
+      local bg_pid="$!"
     fi
-    echo "$!" > "${component_logs[$i]}.pid"
+    echo "${bg_pid}" > "${component_logs[$i]}.pid"
     sleep 1
+    if [[ "${component_titles[$i]}" == "PX4 SITL + Gazebo" ]] && ! kill -0 "${bg_pid}" 2>/dev/null; then
+      echo "Headless component exited immediately: ${component_titles[$i]}"
+      [[ -f "${component_logs[$i]}" ]] && tail -n 80 "${component_logs[$i]}"
+      exit 1
+    fi
   done
 }
 
@@ -801,6 +945,7 @@ $(if [[ "${SIM_BACKEND}" == "gazebo-classic" ]]; then echo "  标签页/终端 -
   - FAST-LIO2:   ${USE_FASTLIO}
   - Nav2:        ${USE_NAV2}
   - 控制源:      ${CONTROL_SOURCE}
+  - 自治栈:      ${LAUNCH_AUTONOMY_STACK}
   - Nav2 odom:   ${NAV2_ODOM_SOURCE}
   - Nav2 cmd:    ${NAV2_CMD_VEL_TOPIC}
   - Nav2 高度:   ${NAV2_FIXED_ALTITUDE_M} m
@@ -814,7 +959,7 @@ QGC 界面:       $(if [[ "${TERMINAL_LAYOUT}" == "headless" ]]; then echo "head
 等待 Gazebo 加载完成后:
   1. 在 QGC 中连接（自动检测）
   2. 切换到 Position 模式 → Arm → Takeoff
-  3. 切换到 Offboard 模式（ROS2 Autonomy 自动接管）
+  3. $(if [[ "${LAUNCH_AUTONOMY_STACK}" == "true" ]]; then echo "切换到 Offboard 模式（ROS2 Autonomy 自动接管）"; else echo "按需手动启动你的规划/控制链路"; fi)
   4. 观察避障行为
 
 使用示例（带激光雷达避障）:
@@ -827,14 +972,17 @@ QGC 界面:       $(if [[ "${TERMINAL_LAYOUT}" == "headless" ]]; then echo "head
   # 新版 Gazebo (若安装了 gz-sim)
   SIM_BACKEND=gz PX4_MODEL=x500_lidar_front ./scripts/start_px4_sim.sh
 
-  # 启用 FAST-LIO2（需要真实 Livox/MID360 数据或等价 /livox/lidar + /livox/imu 输入）
-  USE_FASTLIO=true USE_LIVOX=true ./scripts/start_px4_sim.sh
+  # 启用 FAST-LIO2 仿真 MID360 链路（Gazebo ray lidar -> /livox/lidar, PX4 IMU -> /livox/imu）
+  USE_FASTLIO=true USE_LIVOX=false ./scripts/start_px4_sim.sh
 
   # 启用 Nav2 固定高度规划链路（需要 FAST-LIO2 点云/里程计和 Nav2/octomap 依赖）
   USE_FASTLIO=true USE_NAV2=true ./scripts/start_px4_sim.sh
 
   # 无桌面窗口验证
   TERMINAL_LAYOUT=headless ./scripts/start_px4_sim.sh
+
+  # 仅启动 PX4 + Agent，不拉起 autonomy_stack
+  LAUNCH_AUTONOMY_STACK=false TERMINAL_LAYOUT=headless ./scripts/start_px4_sim.sh
 
 停止: 关闭终端窗口即可
 ================================================================

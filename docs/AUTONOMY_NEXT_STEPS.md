@@ -1,6 +1,546 @@
 # ROS2 Autonomy 多航点飞行与避障验证指南
 
-本文档用于指导后续在 `ROS2 Autonomy` 模式下进行多航点航线飞行、局部绕行避障验证，以及如何把多航点航线写成文件长期复用。
+本文档用于记录当前 `PX4 + ROS 2 + FAST-LIO + Nav2/Ego-Planner` 自主飞行链路的最新进展，并指导后续在仿真和实机上继续验证。
+
+---
+
+## 2026-07-08 最新进展
+
+### Ego-Planner 小目标、1.5 m 目标与低速绕障已通过
+
+已完成 `PX4 SITL + Gazebo room_obstacles + FAST-LIO + Ego-Planner + trajectory_interface` 的 0.6 m、1.0 m、1.5 m 目标自动验证，以及一轮低速跨障绕行验证。验证脚本会自动起飞到约 1.5 m，切出 helper Offboard 到 Loiter hold，再发布 Ego 目标，由 trajectory interface 自行切入 Offboard，最后发送 LAND 并等待 disarm。
+
+本轮关键修复：
+
+- `pointcloud_relay` 的近机体 self-filter 改为优先使用 planner `/odom`，确保 FAST-LIO map、Ego odom、目标点处于同一个 world 原点；PX4 local position 只作为后备。
+- `pointcloud_self_filter_radius_xy_m` 和 `pointcloud_self_filter_radius_z_m` 默认提高到 `1.00`，减少机体自身、桨盘附近残留点、近场噪声进入 Ego 局部地图。
+- `trajectory_interface` 增加 `align_planner_frame_to_px4_local`，在 ROS2 Autonomy/Offboard 交接时记录 planner world 到 PX4 local ENU 的平移 offset，再把 Ego position command 转成 PX4 local ENU setpoint。
+- `trajectory_interface` 保留 completed trajectory 后的当前位置 hold，避免 Ego 短目标完成后停止 setpoint 导致 PX4 Offboard signal lost。
+- `trajectory_interface` 对每个位置 setpoint 做步长限制：水平默认 `0.35 m`，垂直默认 `0.18 m`。
+- LAND/RTL/disarm/非 Offboard mode 命令仍会抑制 trajectory 输出；持久外部接管期间忽略 planner command，避免 LAND 后重新对齐或抢占。
+- 验证脚本允许 PX4 冷启动后的地面 `AUTO_LOITER` 初始模式，但仍要求未解锁、接近地面、无 failsafe。
+- `EGOReplanFSM::getLocalTarget()` 增加短距离/边界采样防护：未采样到 planning horizon 点时，局部目标必须回退到全局终点 `end_pt_`，避免局部目标沿用默认 `[0,0,0]` 造成下降或返航式错误规划。
+- `validate_ego_small_goal_handover.py` 的 LAND 完成判定改为“已 disarm 且高度低于 `0.80 m`”，兼容 PX4 local altitude 在 Gazebo disarm 后的残余漂移。
+- `validate_fastlio_ego_avoidance.py` 已改为和小目标脚本一致的安全流程：helper Offboard 起飞、Loiter hold、再发布 Ego 跨障目标；不再从地面直接 ARM 后穿障。
+
+最终复测结果：
+
+```text
+0.6 m repeat #1: passed=True, min_goal_dist=0.200, max_move=0.422, max_alt=1.474, LAND_COMPLETE
+0.6 m repeat #2: passed=True, min_goal_dist=0.194, max_move=0.439, max_alt=1.497, LAND_COMPLETE
+0.6 m repeat #3: passed=True, min_goal_dist=0.197, max_move=0.428, max_alt=1.466, LAND_COMPLETE
+
+1.0 m: passed=True, min_goal_dist=0.197, max_move=0.837, max_alt=1.562, LAND_COMPLETE
+
+1.5 m cold start:
+published_small_goal: x=1.369, y=0.211, z=1.549
+offboard_seen: true
+min_goal_dist: 0.196 m
+max_motion_from_start: 1.324 m
+max_alt: 1.582 m
+failsafe: false
+result: SMALL_GOAL_RESULT passed=True bad=none
+final: LAND_COMPLETE, disarmed
+
+low-speed obstacle avoidance:
+launch params: max_vel=0.25, max_acc=0.35, obstacle_inflation=0.60, collision_distance=0.65, collision_weight=8.0, virtual_ceil_height=2.15
+target: current left side -> (1.15, -0.20, 1.50)
+frame_alignment: horizontal_error=0.349 m, vertical_error=0.108 m
+min_dist_to_mid_obstacle_aabb_m: 1.234
+required_clearance_m: 0.35
+min_target_dist_m: 0.543
+path_length_m: 14.227
+straight_line_distance_m: 7.241
+max_alt_m: 2.080
+entered_obstacle_aabb: False
+obstacle_xy_touched: False
+crossed_obstacle_side: True
+chain_ok: True
+result: PASS_CLEARANCE_TEST True
+final: LAND_COMPLETE, disarmed
+
+active trajectory LAND takeover:
+takeover_after_s: 8.0
+takeover_command: land
+nav_before_takeover: Offboard
+nav_after_takeover: LAND
+takeover_nav_seen: True
+failsafe: False
+result: TAKEOVER_TEST True
+final: LAND_COMPLETE, disarmed
+
+physical-route obstacle avoidance, target behind obstacle:
+date: 2026-07-08
+world/model: room_obstacles + iris_mid360_sim
+route intent: obstacle is between start and target; target is behind the mid/high obstacle; aircraft must detour before landing
+validation target frame: px4_enu
+validation target: (-5.55, -2.20, 1.50)
+planner goal after frame offset: (-5.592, -2.075, 1.559)
+launch params: max_vel=0.22, max_acc=0.32, obstacle_inflation=0.90, collision_distance=0.80, collision_weight=10.0, virtual_ceil_height=2.20
+frame_alignment: horizontal_error=0.132 m, vertical_error=0.059 m
+straight_line_crosses_obstacle: True
+target_behind_obstacle: True
+min_dist_to_mid_obstacle_aabb_m: 0.967
+required_clearance_m: 0.35
+min_target_dist_m: 0.538
+path_length_m: 7.239
+straight_line_distance_m: 6.025
+target_landing_clearance_m: 2.802
+final_landing_clearance_m: 2.559
+landing_zone_clearance_required_m: 0.80
+entered_obstacle_aabb: False
+obstacle_xy_touched: False
+crossed_obstacle_side: True
+chain_ok: True
+result: PASS_CLEARANCE_TEST True
+final: LAND_COMPLETE, disarmed
+```
+
+小目标/1.5 m 复测中 Ego 日志未再出现：
+
+```text
+ERROR! the drone is in obstacle. This should not happen.
+First 3 control points in obstacles!
+Ran out of pool
+Adjusted local target point from [0.000, 0.000, 0.000]
+```
+
+低速绕障通过轮次中仍出现过若干 `First 3 control points in obstacles! return false` 重规划警告；物理目标点在障碍物后方的验证轮次中，Ego 日志还出现过 2 次 `ERROR! the drone is in obstacle. This should not happen.`，发生在接近目标点时 planner 将局部起点/目标点上调。该轮 PX4/Gazebo 物理轨迹判据仍通过：没有进入中间障碍 AABB、没有触碰障碍 XY 区域、无 failsafe、最终 LAND_COMPLETE。但这说明 planner 的局部地图/膨胀/目标收敛仍有边界问题，实机前必须继续保守降速、增大安全距离，并优先解决接近目标点时的 Ego 起点/目标修正告警。
+
+当前结论：Ego-Planner 实机同构链路已经从“链路打通但飞行失败”推进到“0.6 m 三连通过、1.0 m 通过、1.5 m 冷启动通过、低速跨障绕行通过、物理目标点在障碍物后方的绕飞验证通过”。现在可以进入更严格的实机前台架/半实物准备，但还不能直接做实机自由绕障飞行。
+
+已完成的下一步链路检查：
+
+```text
+validate_fastlio_ego_avoidance.py --no-arm --require-chain
+FRAME_ALIGNMENT horizontal_error=0.220 m, vertical_error=0.009 m
+goal_publish_count: 1
+position_cmd_received: True
+bspline_has_publisher: True
+position_cmd_has_publisher: True
+chain_ok: True
+```
+
+下一步执行顺序：
+
+1. 实机前台架检查：MID360 外参、FAST-LIO `/Odometry` 稳定性、PX4 local 与 planner frame offset、RC 手动接管、LAND/RTL/disarm 抑制。
+2. 实机首次飞行只允许低速、低高度、短距离目标，并保留人工遥控器 mode switch/kill 兜底。
+
+### 实机台架检查清单
+
+当前环境未连接真实飞控、MID360、遥控器和电机台架，因此实机台架检查尚未实际执行。上机前必须逐项确认：
+
+- 自动检查脚本：`scripts/check_real_bench_readiness.py --duration-s 10`。当前无硬件环境运行结果为 `BENCH_READINESS_RESULT passed=False`，原因是 PX4、LiDAR、FAST-LIO 和 planner topic 均未在线；连接真实台架后必须通过该脚本。
+- 机械与安全：拆桨；机体固定；电池固定；急停/断电路径明确；遥控器 mode switch 与 kill switch 可用。
+- PX4 通信：`MicroXRCEAgent` 与飞控稳定连接；`/fmu/out/vehicle_status_v4`、`/fmu/out/vehicle_local_position_v1`、`/fmu/out/sensor_combined` 连续发布。
+- MID360 与 FAST-LIO：`/livox/lidar`、`/livox/imu` 时间戳单调；FAST-LIO `/Odometry` 静止漂移小；快速轻推机体时姿态/位置无跳变。
+- 坐标对齐：悬停/台架静止时 planner `/odom` 与 PX4 local ENU 水平误差建议 `<0.5 m`，垂直误差建议 `<0.3 m`；超过阈值禁止切 Ego Offboard。
+- Ego 输入点云：`/autonomy/ego_local_map` 不包含机体自身、桨盘、地面近噪声；self-filter 仍使用 planner `/odom`。
+- 外部接管：在 planner 输出活跃时测试 LAND、RTL、disarm、手动 mode 切换；trajectory_interface 必须立即停止抢 setpoint。
+- 首飞参数：使用 `max_vel<=0.25`、`max_acc<=0.35`、`virtual_ceil_height` 按场地高度设置；目标距离从 `0.5 m`、`1.0 m` 逐步扩大。
+
+---
+
+## 2026-07-07 最新进展
+
+### Ego-Planner 实机同构链路验证
+
+已进入 `PX4 SITL + Gazebo + FAST-LIO + Ego-Planner + trajectory_interface` 实机同构链路，采用的启动边界为：
+
+```text
+PX4/Gazebo/MicroXRCEAgent
+FAST-LIO: /livox/lidar + /livox/imu -> /Odometry, /autonomy/local_map
+Ego-Planner: /odom + /autonomy/ego_local_map -> /planning/bspline
+trajectory_interface: /planning/position_cmd -> /fmu/in/trajectory_setpoint
+```
+
+本次已确认通过的链路项：
+
+- FAST-LIO、Ego-Planner、trajectory interface 可在不启动 Nav2/mission controller 的情况下单独运行。
+- `/livox/lidar`、`/Odometry`、`/odom`、`/autonomy/local_map`、`/autonomy/ego_local_map` 连续发布。
+- 给 `/move_base_simple/goal` 发布短距离目标后，Ego-Planner 能输出 `/planning/bspline` 和 `/planning/position_cmd`。
+- trajectory interface 能输出 `/fmu/in/trajectory_setpoint`，PX4 能进入 Offboard。
+- 停止 Ego/trajectory 输出后，PX4 可执行 LAND 并最终 disarm。
+
+上一轮 1 m 目标飞行闭环结果：
+
+```text
+takeoff_stable: true, altitude ~= 1.88 m
+ego_goal: current FAST-LIO odom + 1.0 m, z = 2.0 m
+offboard_seen: true
+bspline_delta: 103
+position_cmd_delta: 2415
+trajectory_setpoint_delta: 1210
+max_motion_from_start: 4.92 m
+failsafe: false during Offboard monitor
+final: LAND + disarm
+```
+
+新增 0.35 m 小目标飞行闭环结果：
+
+```text
+takeoff_stable: true, altitude ~= 1.40 m
+hover frame: planner=(0.121, 0.170, 1.458), px4_enu=(0.180, 0.005, 1.397)
+frame_error: horizontal=0.175 m, vertical=0.061 m
+ego_goal: current FAST-LIO odom + 0.35 m, z=current z
+offboard_seen: true
+bspline_delta: 19
+position_cmd_delta: 19
+trajectory_setpoint_delta: 19
+min_goal_dist: 0.330 m
+max_motion_from_start: 1.306 m
+final_before_abort: (0.721, 0.288, 2.612), nav=14, armed=2, failsafe=false
+result: FAILED, reason=overshoot
+active_trajectory_land: timeout, still Offboard at alt ~= 3.92 m
+post_abort: stopped Ego/trajectory output, sent LAND, final alt ~= 0.05 m, disarmed
+```
+
+Ego-Planner 日志中的关键异常：
+
+```text
+Adjusted start point / local target point upward, e.g. target z 1.458 -> 1.775 -> 1.925 -> 2.075
+ERROR! the drone is in obstacle. This should not happen.
+First 3 control points in obstacles!
+later: Ran out of pool, index=-1 78 127, POOL_SIZE=256 256 128
+```
+
+结论：Ego-Planner 链路层已经打通，但飞行闭环明确未通过。当前主因不是简单的 PX4/ROS 坐标不通，而是 Ego 局部地图或膨胀参数让 planner 判断“机体在障碍物中”，随后不断把起点/目标向上修正并导致 Offboard 超调。active trajectory 输出期间 LAND 也会被持续 setpoint 抢占，因此在修复前禁止继续扩大目标或进入实机飞行。
+
+已做的安全收紧：
+
+- `ego_planner_offboard.launch.py` 中 `trajectory_auto_arm` 默认改为 `false`，Ego 规划链默认不再自动解锁。
+- `trajectory_interface` 增加 `require_armed_before_offboard`，默认未解锁时不自动请求 Offboard。
+- `trajectory_interface` 增加 Offboard/arm 起始门禁：自动切 Offboard/自动 arm 前，必须收到 PX4 local position，并确认 planner `position_cmd` 与 PX4 local ENU 的水平/垂直误差低于阈值。
+- `trajectory_interface` 增加外部接管抑制：监听 PX4/MAVLink 侧 LAND、RTL、Disarm、非 Offboard mode 命令，收到后立即挂起 trajectory setpoint 输出，直到 PX4 disarm 后清除。
+- `validate_fastlio_ego_avoidance.py` 增加 frame alignment 前置检查：发布飞行目标前，先比较 `/odom` 与 `/fmu/out/vehicle_local_position_v1` 转换后的 ENU 坐标。
+- `validate_fastlio_ego_avoidance.py` 增加 flight validation 收尾 LAND：非 `--no-arm` 测试结束后会发送 `NAV_LAND` 并等待 disarm。
+
+新增门禁复测结果：
+
+```text
+FRAME_ALIGNMENT horizontal_error=0.010 m, vertical_error=0.031 m
+arming_state: 1
+nav_state: 4
+chain_ok: True
+NO_ARM_CHAIN_ONLY
+```
+
+这说明 no-arm 链路验证时 planner ENU 与 PX4 local ENU 对齐，且未解锁状态下不会再被 trajectory interface 自动切入 Offboard。
+
+进一步优化：
+
+- `validate_fastlio_ego_avoidance.py --no-arm` 默认改为短链路目标，不再发布穿障远目标。
+- no-arm 短链路目标默认约为当前 ENU 位置前方 `0.6 m`，高度为 `max(current_z + 0.3, 0.5)`。
+- `ego_planner_offboard.launch.py` 将 `astar_pool_size_x/y/z` 参数显式暴露，默认仍为 `256/256/128`；后续只有在确认内存余量和确实需要更大地图时再调大。
+
+短链路复测结果：
+
+```text
+FRAME_ALIGNMENT horizontal_error=0.020 m, vertical_error=0.003 m
+Short chain target: current ENU + ~0.6 m, z = 0.5 m
+nav_state: 4
+chain_ok: True
+new Ran out of pool: not observed
+```
+
+下一步必须先修复：
+
+- 修 Ego 输入点云/局部地图过滤：禁止把机体自身、近地噪声、桨盘附近点云或过大的 inflation 当成当前机体占据障碍。
+- 收紧 Ego 高度边界：先把 `virtual_ceil_height` 和 `ground_height` 调到不会迫使 1.4-1.5 m 起飞高度被向上挤压的范围。
+- 降低短目标飞行参数：小目标阶段继续使用 `max_vel<=0.35`、`max_acc<=0.45`，先确认 0.3-0.5 m 闭环不过冲。
+- 复测外部接管抑制：Offboard 中发送 LAND 后，`trajectory_interface` 必须停止 setpoint 输出，PX4 必须稳定退出/下降并 disarm。
+- 只有 0.35 m 小目标稳定通过后，才扩大到 0.6 m、1.0 m 和绕障目标。
+
+当前已经完成一轮接近实机接口的 headless 仿真闭环：
+
+- PX4 SITL + Gazebo Classic + MicroXRCEAgent 正常启动。
+- Gazebo `iris_mid360_sim` 模型输出 32 线 MID360 风格点云。
+- `/sim/mid360/points_raw` 通过 `mid360_sim_bridge` 转为 `/livox/lidar`。
+- PX4 `/fmu/out/sensor_combined` 通过 `px4_imu_bridge` 转为 `/livox/imu`。
+- FAST-LIO 正常输出 `/Odometry`，静止状态约 9.5-10 Hz。
+- Nav2 不再直接消费 FAST-LIO 的 `/autonomy/cloud_registered`。
+- Nav2/Octomap 改为消费独立轻量点云 `/autonomy/nav2_cloud`，由 `/livox/lidar` 限频抽稀生成。
+- 自动起飞到约 2 m 后，成功切入 PX4 ROS2 Autonomy / External1。
+- Nav2 成功输出 `/cmd_vel`，PX4 接收 ROS2 Autonomy 控制，最终 LAND 并 disarm。
+
+本轮自动飞行验证结果：
+
+```text
+bad: None
+seen_external: True
+cmd_count: 1060
+max_cmd_speed: 0.299 m/s
+max_lio_norm: 3.169 m
+max_lio_step: 0.077 m
+final_rel_alt: 0.047 m
+final_arming_state: 1
+```
+
+这说明当前 Nav2 固定高度阶段已经可作为安全中间验证链路。最终实机方案仍应转向 Ego-Planner 三维轨迹规划。
+
+---
+
+## 本次代码审查与清理结论
+
+已经清理的无用文件：
+
+- 删除旧 `build/`，随后为恢复 `--symlink-install` 工作区重建了当前必要包
+- 删除 `log/`
+- 删除 `.runtime/`
+- 删除所有 `__pycache__/`
+- 删除所有 `*.pyc`
+
+保留的内容：
+
+- 保留 `install/`，因为当前启动脚本会检查 `install/setup.bash`；后续构建会刷新已改包。
+- 保留当前重建后的 `build/`，因为 `--symlink-install` 下 `install/` 的开发模式 hook 会引用 `build/` 内文件。
+- 保留未跟踪但当前链路需要的功能文件，例如：
+  - `src/px4_fastlio_bridge/px4_fastlio_bridge/mid360_sim_bridge.py`
+  - `src/px4_obstacle_tools/px4_obstacle_tools/pointcloud_relay.py`
+  - `scripts/validate_fastlio_ego_avoidance.py`
+  - `scripts/run_ego_planner_validation.sh`
+  - `src/px4_gazebo_depth_bridge/`
+
+建议下一次整理 git 时，把这些当前已经参与链路的文件纳入版本管理，而不是删除。
+
+本次审查中确认/修复的关键点：
+
+- `px4_imu_bridge` 增加 IMU 时间戳单调保护，避免 FAST-LIO 因高频时间戳微小倒退而反复 `clear buffer`。
+- `pointcloud_relay` 支持限频、抽稀、最大点数限制和 frame 改写，用于隔离 Nav2/Octomap 与 FAST-LIO 主定位链路。
+- `lio_odometry_bridge` 增加 FAST-LIO 输出 sanity gate，避免异常定位跳变直接进入控制链路。
+- `lio_odometry_bridge` 转发点云时改为复制消息再改 frame，避免修改收到的消息对象。
+- `trajectory_interface` 监听 PX4 vehicle command，收到 LAND/RTL/disarm/非 Offboard mode 后挂起 trajectory setpoint 输出，避免降落命令被 active Offboard setpoint 抢占。
+- `stop_px4_sim.sh` 补充清理 `mid360_sim_bridge`、`px4_imu_bridge`、`pointcloud_relay`、`fastlio_mapping` 等进程，避免残留进程污染下一次验证。
+
+---
+
+## 当前推荐架构
+
+分阶段推进：
+
+1. Nav2 固定高度验证链路
+
+   用途：确认 PX4 External1、ROS2 控制接管、FAST-LIO 输入、点云避障输入、LAND/disarm 流程都稳定。
+
+   当前状态：已经通过一次自动起飞、切 External1、Nav2 输出速度、自动降落验证。
+
+2. Ego-Planner 三维规划链路
+
+   用途：作为最终实机方案，输入 FAST-LIO odom 和局部点云，输出三维轨迹/位置命令，再由 PX4 trajectory interface 转为 PX4 setpoint。
+
+   当前状态：0.6 m 小目标飞行闭环已通过；下一步做重复性、1.0-1.5 m 无障碍目标和低速绕障验证，再进入实机台架。
+
+最终实机边界应保持：
+
+```text
+PX4 飞控
+  - EKF/姿态/电机控制/ failsafe / mode 管理
+  - 接收 ROS2 External/Offboard setpoint
+
+ROS2 机载计算机
+  - MID360 driver -> /livox/lidar
+  - PX4 IMU or external IMU -> /livox/imu
+  - FAST-LIO -> /Odometry, /cloud_registered
+  - Ego-Planner -> 三维轨迹/位置命令
+  - trajectory_interface -> /fmu/in/trajectory_setpoint 等 PX4 输入
+```
+
+---
+
+## 下一步执行顺序
+
+### Step 1: 重新构建已改包
+
+清理后先刷新相关包：
+
+```bash
+cd /home/p/px4_ros2_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-select \
+  px4_fastlio_bridge \
+  px4_obstacle_tools \
+  px4_autonomy_bringup \
+  px4_nav2_bridge \
+  px4_trajectory_interface \
+  --symlink-install
+```
+
+### Step 2: 复测 Nav2 基线
+
+目的：确认清理和小修后，当前基线没有回退。
+
+```bash
+cd /home/p/px4_ros2_ws
+TERMINAL_LAYOUT=headless \
+KEEP_TERMINALS_OPEN=false \
+ENABLE_OBSTACLE_AVOIDANCE=false \
+USE_FASTLIO=true \
+USE_LIVOX=false \
+USE_NAV2=true \
+NAV2_ODOM_SOURCE=px4_local \
+LAUNCH_OBSTACLE_SIM=false \
+LAUNCH_GZ_SCAN_DISTANCE=false \
+LAUNCH_GZ_SIX_DIRECTION_DISTANCE=false \
+PX4_WORLD=room_obstacles \
+PX4_MODEL=iris_mid360_sim \
+FASTLIO_RVIZ=false \
+./scripts/start_px4_sim.sh
+```
+
+起飞前必须看到：
+
+```text
+/livox/lidar              约 10 Hz
+/livox/imu                高频且无 timestamp back
+/Odometry                 约 9.5-10 Hz
+/autonomy/nav2_cloud      约 4-5 Hz, 约 5000 点
+PX4 pre_flight_checks_pass true
+```
+
+### Step 3: 转入 Ego-Planner 实机同构链路验证
+
+目标：验证最终实机同构链路，而不是继续扩展 Nav2。
+
+当前只做 chain validation，不再直接做 flight validation。先启动 PX4/Gazebo/Agent，不启动 Nav2/Autonomy stack：
+
+```bash
+cd /home/p/px4_ros2_ws
+TERMINAL_LAYOUT=headless \
+KEEP_TERMINALS_OPEN=false \
+LAUNCH_AUTONOMY_STACK=false \
+ENABLE_OBSTACLE_AVOIDANCE=false \
+PX4_WORLD=room_obstacles \
+PX4_MODEL=iris_mid360_sim \
+FASTLIO_RVIZ=false \
+./scripts/start_px4_sim.sh
+```
+
+再单独启动 FAST-LIO：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch px4_fastlio_bridge fastlio_mapping.launch.py \
+  use_livox:=false \
+  use_sim_time:=false \
+  fastlio_config_file:=mid360.yaml \
+  rviz:=false \
+  publish_nav2_tf:=false \
+  nav2_map_frame_id:=world \
+  nav2_odom_frame_id:=odom \
+  nav2_base_frame_id:=base_link
+```
+
+再单独启动 Ego-Planner/trajectory interface：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch px4_trajectory_interface ego_planner_offboard.launch.py \
+  use_sim_time:=false \
+  use_fastlio_bridge:=false \
+  use_sim_bridge:=false \
+  use_depth_camera_fastlio:=false \
+  use_ego_planner:=true \
+  use_simple_avoidance_fallback:=false \
+  use_native_3d_pointcloud:=true \
+  native_pointcloud_topic:=/autonomy/local_map \
+  local_map_topic:=/autonomy/ego_local_map \
+  planner_odom_topic:=/odom \
+  lio_odom_topic:=/autonomy/lio_odometry \
+  fixed_goal_altitude_m:=1.5 \
+  launch_rviz:=false \
+  max_vel:=0.35 \
+  max_acc:=0.45 \
+  planning_horizon:=4.0 \
+  trajectory_auto_arm:=false \
+  trajectory_auto_set_offboard:=true \
+  suspend_on_external_mode_command:=true \
+  require_armed_before_offboard:=true \
+  require_local_position_before_offboard:=true \
+  max_offboard_start_horizontal_error_m:=0.8 \
+  max_offboard_start_vertical_error_m:=0.5 \
+  align_planner_frame_to_px4_local:=true \
+  pointcloud_self_filter_radius_xy_m:=1.0 \
+  pointcloud_self_filter_radius_z_m:=1.0 \
+  astar_pool_size_x:=256 \
+  astar_pool_size_y:=256 \
+  astar_pool_size_z:=128
+```
+
+先做不解锁链路验证：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+./scripts/run_ego_planner_validation.sh
+```
+
+`VALIDATION_MODE=chain` 或默认模式下，脚本内部会使用 `--no-arm`，只发短目标做链路验证；不要在这一步做穿障飞行。
+
+验证标准：
+
+- FAST-LIO `/Odometry` 持续稳定。
+- Ego-Planner 收到 odom 和局部点云。
+- `FRAME_ALIGNMENT` 输出中 planner ENU 与 PX4 local ENU 误差低于阈值。
+- trajectory interface 输出 PX4 setpoint。
+- 不要求解锁、不要求起飞、不要求进入 Offboard。
+
+再做 0.6 m 小目标飞行验证：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+python3 -u scripts/validate_ego_small_goal_handover.py \
+  --goal-forward-m 0.6 \
+  --max-move-pass-m 1.2
+```
+
+飞行验证标准：
+
+- 脚本自动起飞、切 Loiter handover、发布 Ego 小目标、进入 Offboard、LAND/disarm。
+- `SMALL_GOAL_RESULT passed=True bad=none`。
+- `failsafe=False`，`offboard_seen=True`。
+- planner 日志中不得再出现 `drone is in obstacle`、`First 3 control points in obstacles`、`Ran out of pool`。
+- Offboard 中发送 LAND/RTL/Disarm 或切非 Offboard mode 时，`trajectory_interface` 必须立即挂起 trajectory setpoint 输出。
+- 通过后再扩大到 1.0 m、1.5 m 和低速绕障目标。
+
+### Step 4: 实机前台架检查
+
+实机前不要直接飞，先上台架或拆桨验证：
+
+```bash
+ros2 topic hz /livox/lidar
+ros2 topic hz /livox/imu
+ros2 topic hz /Odometry
+ros2 topic echo --once /fmu/out/vehicle_status_v4
+ros2 topic echo --once /fmu/out/vehicle_local_position_v1
+```
+
+必须确认：
+
+- MID360 点云稳定。
+- IMU 时间戳单调。
+- FAST-LIO 静止不发散。
+- PX4 mode 切换命令可用。
+- failsafe 策略明确，遥控器/地面站可以随时接管。
+
+### Step 5: 实机低风险首飞
+
+首飞只做最小闭环：
+
+1. 手动 Position 起飞到 1.5-2.0 m。
+2. 悬停 10 s，确认 FAST-LIO 不漂。
+3. 切 ROS2 External/Offboard。
+4. 只给一个 0.5-1.0 m 的短距离目标。
+5. 成功后立即 LAND。
+6. 分析 PX4 log、ROS bag、FAST-LIO 轨迹。
+
+---
+
+## 旧版多航点/Nav2说明
+
+以下内容保留用于 Nav2 固定高度阶段和多航点任务参考。后续实机主线以 Ego-Planner 三维规划为准。
 
 ---
 
@@ -506,3 +1046,44 @@ ros2 topic echo /fmu/out/vehicle_local_position_v1 --once
 - 支持在编辑器中选择从已有 YAML 文件导入航点进行可视化修改。
 - 增加绕障后的回归航线策略，避免在障碍附近反复规划。
 - 增加实机传感器健康检查，激光雷达无数据时禁止进入自主航线。
+
+---
+
+## 2026-06-29 EGO Planner 真链路联调建议
+
+针对当前 `FAST-LIO + EGO Planner + px4_trajectory_interface` 联调，建议后续不要继续混用 `px4_autonomy_bringup` 里的 mission 控制链与 `/move_base_simple/goal` 路线。
+
+### 建议执行顺序
+
+1. 关闭当前 `px4_autonomy_bringup` 自带 mission 控制链
+   - 如果通过 bringup 启动，增加：`launch_mission_control:=false`
+2. 单独启动 EGO Planner 规划链
+   - 入口：`ros2 launch px4_trajectory_interface ego_planner_offboard.launch.py`
+   - 显式参数：`use_ego_planner:=true`
+   - 显式参数：`use_simple_avoidance_fallback:=false`
+3. 先验证完整闭环
+   - `/map`
+   - `/odom`
+   - `/move_base_simple/goal`
+   - `/planning/bspline`
+   - `/planning/position_cmd`
+4. 闭环通过后，再重跑同一个穿障目标测试
+
+### 推荐命令
+
+```bash
+# 启动规划链
+./scripts/start_autonomy_with_planning.sh
+
+# 只检查闭环，不起飞
+./scripts/run_ego_planner_validation.sh
+
+# 闭环通过后，再执行飞行穿障验证
+VALIDATION_MODE=flight ./scripts/run_ego_planner_validation.sh
+```
+
+### 当前结论
+
+- 本轮尚未收敛到“真正稳定绕过障碍并到达目标点”
+- 但问题已经从“链路不通”收敛到“fallback 规划器能力不足”
+- 下一轮建议直接沿 EGO Planner 真链路继续修正

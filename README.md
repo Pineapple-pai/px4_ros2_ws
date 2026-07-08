@@ -179,6 +179,31 @@ ros2 launch px4_autonomy_bringup autonomy_stack.launch.py
 ros2 launch px4_autonomy_bringup autonomy_stack.launch.py use_livox:=true
 ```
 
+如果你要在 Gazebo 里测试 Ego-Planner 绕飞，建议优先使用原生 `PointCloud2`，不要默认走“扫描线转点云”：
+
+```bash
+source /opt/ros/humble/setup.bash
+source /home/p/px4_ros2_ws/install/setup.bash
+ros2 launch px4_trajectory_interface ego_planner_offboard.launch.py \
+  use_native_3d_pointcloud:=true \
+  native_pointcloud_topic:=/sim/mid360/points \
+  use_scan_fallback:=false
+```
+
+如果你想用更接近真机 `Mid360` 挂载方式的 Gazebo Classic 机型，可以直接：
+
+```bash
+PX4_MODEL=iris_mid360_sim /home/p/px4_ros2_ws/scripts/start_px4_sim.sh
+```
+
+如果你的仿真暂时还没有深度相机或 3D lidar 点云，可以临时退回旧路径：
+
+```bash
+ros2 launch px4_trajectory_interface ego_planner_offboard.launch.py \
+  use_native_3d_pointcloud:=false \
+  use_scan_fallback:=true
+```
+
 ## 推荐操作顺序
 
 建议按下面顺序操作，尤其是前期调试阶段：
@@ -235,7 +260,7 @@ ros2 launch px4_autonomy_bringup autonomy_stack.launch.py use_livox:=true
 - `mission_timeout_s`
   任务超时，超时后模式会直接完成并把控制权交还给 PX4。
 - `auto_rtl_after_finish`
-  当前只作为任务意图开关保留，默认不主动替你切换 PX4 模式。建议仍通过 QGC 手动切 `RTL`。
+  当前用于表达“任务结束后需要由 QGC/遥控器接管返航”的意图；实际是否切到 `RTL` 取决于你启用的上层接管链路和运行时模式配置。
 - `obstacle_distance_topic`
   后续感知节点发布最近障碍距离的 ROS 2 话题。
 - `obstacle_stop_distance_m`

@@ -62,10 +62,16 @@ def generate_launch_description():
     nav2_status_timeout_s = LaunchConfiguration("nav2_status_timeout_s")
     qgc_auto_request_ros2_mode = LaunchConfiguration("qgc_auto_request_ros2_mode")
     qgc_mode_request_period_s = LaunchConfiguration("qgc_mode_request_period_s")
-    qgc_mode_request_hold_s = LaunchConfiguration("qgc_mode_request_hold_s")
     qgc_reposition_goal_bridge = LaunchConfiguration("qgc_reposition_goal_bridge")
+    launch_mission_control = LaunchConfiguration("launch_mission_control")
     nav2_odom_source = LaunchConfiguration("nav2_odom_source")
     nav2_cloud_topic = LaunchConfiguration("nav2_cloud_topic")
+    launch_nav2_pointcloud_relay = LaunchConfiguration("launch_nav2_pointcloud_relay")
+    nav2_cloud_input_topic = LaunchConfiguration("nav2_cloud_input_topic")
+    nav2_cloud_output_frame_id = LaunchConfiguration("nav2_cloud_output_frame_id")
+    nav2_cloud_max_rate_hz = LaunchConfiguration("nav2_cloud_max_rate_hz")
+    nav2_cloud_point_step_stride = LaunchConfiguration("nav2_cloud_point_step_stride")
+    nav2_cloud_max_points = LaunchConfiguration("nav2_cloud_max_points")
     launch_gz_scan_to_pointcloud = LaunchConfiguration("launch_gz_scan_to_pointcloud")
     octomap_resolution = LaunchConfiguration("octomap_resolution")
     octomap_min_z = LaunchConfiguration("octomap_min_z")
@@ -149,11 +155,22 @@ def generate_launch_description():
         DeclareLaunchArgument("nav2_status_timeout_s", default_value="1.0"),
         DeclareLaunchArgument("qgc_auto_request_ros2_mode", default_value="true"),
         DeclareLaunchArgument("qgc_mode_request_period_s", default_value="0.25"),
-        DeclareLaunchArgument("qgc_mode_request_hold_s", default_value="30.0"),
         DeclareLaunchArgument("qgc_reposition_goal_bridge", default_value="true"),
+        DeclareLaunchArgument(
+            "launch_mission_control",
+            default_value="true",
+            description="Launch px4_autonomy_mode mission control chain. Disable when validating Ego-Planner offboard control.",
+        ),
         DeclareLaunchArgument("nav2_odom_source", default_value="px4_local",
                               description="px4_local uses PX4 local position; fastlio uses FAST-LIO bridge"),
-        DeclareLaunchArgument("nav2_cloud_topic", default_value="/autonomy/cloud_registered"),
+        DeclareLaunchArgument("nav2_cloud_topic", default_value="/autonomy/nav2_cloud"),
+        DeclareLaunchArgument("launch_nav2_pointcloud_relay", default_value="true",
+                              description="Relay and thin the raw lidar cloud for Nav2/Octomap"),
+        DeclareLaunchArgument("nav2_cloud_input_topic", default_value="/livox/lidar"),
+        DeclareLaunchArgument("nav2_cloud_output_frame_id", default_value="base_link"),
+        DeclareLaunchArgument("nav2_cloud_max_rate_hz", default_value="5.0"),
+        DeclareLaunchArgument("nav2_cloud_point_step_stride", default_value="3"),
+        DeclareLaunchArgument("nav2_cloud_max_points", default_value="5000"),
         DeclareLaunchArgument("launch_gz_scan_to_pointcloud", default_value="false",
                               description="Use Gazebo Classic scan as a simulated Nav2 point cloud"),
         DeclareLaunchArgument("octomap_resolution", default_value="0.10"),
@@ -260,6 +277,24 @@ def generate_launch_description():
             }],
         ),
         Node(
+            package="px4_obstacle_tools",
+            executable="pointcloud_relay",
+            name="nav2_pointcloud_relay",
+            output="screen",
+            condition=IfCondition(PythonExpression([
+                "'", use_nav2, "' == 'true' and '", launch_nav2_pointcloud_relay, "' == 'true'"
+            ])),
+            parameters=[{
+                "use_sim_time": use_sim_time,
+                "input_topic": nav2_cloud_input_topic,
+                "output_topic": nav2_cloud_topic,
+                "output_frame_id": nav2_cloud_output_frame_id,
+                "max_rate_hz": nav2_cloud_max_rate_hz,
+                "point_step_stride": nav2_cloud_point_step_stride,
+                "max_points": nav2_cloud_max_points,
+            }],
+        ),
+        Node(
             package="octomap_server",
             executable="octomap_server_node",
             name="octomap_server",
@@ -314,7 +349,6 @@ def generate_launch_description():
                 "ros2_nav_state": nav2_required_nav_state,
                 "require_armed_for_nav2_goal": True,
                 "mode_request_period_s": qgc_mode_request_period_s,
-                "mode_request_hold_s": qgc_mode_request_hold_s,
             }],
         ),
         # PX4 autonomy mode
@@ -323,6 +357,7 @@ def generate_launch_description():
             executable="px4_autonomy_mode",
             name="px4_autonomy_mode",
             output="screen",
+            condition=IfCondition(launch_mission_control),
             parameters=[{
                 "mission_size_m": mission_size_m,
                 "mission_altitude_m": mission_altitude_m,

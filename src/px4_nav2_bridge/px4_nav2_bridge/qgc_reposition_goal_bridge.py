@@ -37,7 +37,6 @@ class QgcRepositionGoalBridge(Node):
         self.declare_parameter("ros2_nav_state", int(VehicleStatus.NAVIGATION_STATE_EXTERNAL1))
         self.declare_parameter("require_armed_for_nav2_goal", True)
         self.declare_parameter("mode_request_period_s", 0.25)
-        self.declare_parameter("mode_request_hold_s", 30.0)
         self.declare_parameter("goal_dedup_distance_m", 0.25)
         self.declare_parameter("nav2_server_timeout_s", 2.0)
         self.declare_parameter("enable_nav2_action", True)
@@ -56,7 +55,6 @@ class QgcRepositionGoalBridge(Node):
         self._ros2_nav_state = int(self.get_parameter("ros2_nav_state").value)
         self._require_armed_for_nav2_goal = bool(self.get_parameter("require_armed_for_nav2_goal").value)
         self._mode_request_period_s = float(self.get_parameter("mode_request_period_s").value)
-        self._mode_request_hold_s = float(self.get_parameter("mode_request_hold_s").value)
         self._goal_dedup_distance_m = float(self.get_parameter("goal_dedup_distance_m").value)
         self._nav2_server_timeout_s = float(self.get_parameter("nav2_server_timeout_s").value)
         self._enable_nav2_action = bool(self.get_parameter("enable_nav2_action").value)
@@ -103,6 +101,11 @@ class QgcRepositionGoalBridge(Node):
         self._latest_local_position = msg
 
     def _handle_vehicle_status(self, msg: VehicleStatus) -> None:
+        if self._nav2_goal_active and msg.nav_state != self._ros2_nav_state:
+            self._nav2_goal_active = False
+            self.get_logger().info(
+                "PX4 left ROS2 external mode; releasing QGC goal protection so RTL/manual control can take over."
+            )
         self._latest_vehicle_status = msg
 
     def _handle_vehicle_command(self, msg: VehicleCommand) -> None:
@@ -195,10 +198,7 @@ class QgcRepositionGoalBridge(Node):
         if status is None:
             return
 
-        now = self.get_clock().now()
-        goal_age_s = (now - self._last_goal_request_time).nanoseconds / 1e9
-        protect_active = self._nav2_goal_active or goal_age_s <= self._mode_request_hold_s
-        if not protect_active:
+        if not self._nav2_goal_active:
             return
 
         if status.failsafe:

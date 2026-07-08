@@ -20,6 +20,7 @@ setup(
         "console_scripts": [
             "qgc_reposition_goal_bridge = px4_nav2_bridge.qgc_reposition_goal_bridge:main",
             "px4_local_position_nav2_bridge = px4_nav2_bridge.px4_local_position_nav2_bridge:main",
+            "odom_path_visualizer = px4_nav2_bridge.odom_path_visualizer:main",
         ],
     },
 )

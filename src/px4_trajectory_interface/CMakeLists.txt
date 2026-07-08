@@ -21,11 +21,20 @@ add_executable(trajectory_interface
   src/trajectory_interface.cpp
 )
 
+add_executable(simple_avoidance_position_cmd
+  src/simple_avoidance_position_cmd.cpp
+)
+
 target_include_directories(trajectory_interface PRIVATE include)
+target_include_directories(simple_avoidance_position_cmd PRIVATE include)
 
 target_link_libraries(trajectory_interface
   Eigen3::Eigen
   px4_ros2_cpp::px4_ros2_cpp
+  rclcpp::rclcpp
+)
+
+target_link_libraries(simple_avoidance_position_cmd
   rclcpp::rclcpp
 )
 
@@ -34,7 +43,13 @@ ament_target_dependencies(trajectory_interface
   quadrotor_msgs
 )
 
-install(TARGETS trajectory_interface
+ament_target_dependencies(simple_avoidance_position_cmd
+  geometry_msgs
+  nav_msgs
+  quadrotor_msgs
+)
+
+install(TARGETS trajectory_interface simple_avoidance_position_cmd
   DESTINATION lib/${PROJECT_NAME}
 )
 
