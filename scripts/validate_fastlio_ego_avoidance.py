@@ -463,6 +463,7 @@ def main():
             current_status["arming_state"] != VehicleStatus.ARMING_STATE_DISARMED
             or current_status["nav_state"] not in allowed_initial_nav_states
             or current_status["failsafe"]
+            or not current_status["preflight"]
             or current_px4 is None
             or current_px4[2] > args.initial_ground_altitude_max_m
         ):
@@ -470,7 +471,8 @@ def main():
                 "Refusing to start from a dirty initial state: "
                 "expected disarmed ground POSCTL/AUTO_LOITER without failsafe, got "
                 f"armed={current_status['arming_state']} nav={current_status['nav_state']} "
-                f"failsafe={current_status['failsafe']} alt={current_px4[2] if current_px4 else float('nan'):.2f}",
+                f"failsafe={current_status['failsafe']} preflight={current_status['preflight']} "
+                f"alt={current_px4[2] if current_px4 else float('nan'):.2f}",
                 file=sys.stderr,
             )
             return False
@@ -772,7 +774,8 @@ def main():
             [
                 chain_state["odom_received"],
                 chain_state["goal_publish_count"] > 0,
-                (chain_state["position_cmd_received"] or chain_state["position_cmd_has_publisher"]),
+                chain_state["bspline_received"],
+                chain_state["position_cmd_received"],
             ]
         ):
             break
@@ -790,7 +793,10 @@ def main():
         [
             chain_state["odom_received"],
             chain_state["goal_publish_count"] > 0,
-            (chain_state["position_cmd_received"] or chain_state["position_cmd_has_publisher"]),
+            chain_state["bspline_has_publisher"],
+            chain_state["position_cmd_has_publisher"],
+            chain_state["bspline_received"],
+            chain_state["position_cmd_received"],
         ]
     )
     if args.require_chain and not chain_ok:

@@ -1,5 +1,7 @@
 ## PX4 GUI Ego-Planner 避障验证流程
 
+> **当前阶段（2026-07-10）**：只做 SITL/Gazebo 仿真回归，暂不接入真机。本文所有会解锁的命令都只能用于 PX4 SITL。规划链默认不自动解锁；飞行验证必须由验证脚本执行，并显式设置 `CONFIRM_SIMULATION_FLIGHT=YES`。
+
 本文档记录当前工作区下，`PX4 + Gazebo Classic + Ego Planner` 的一套可复现验证流程，用于确认：
 
 1. PX4 SITL 主链已正常启动
@@ -96,9 +98,9 @@ ros2 launch px4_trajectory_interface ego_planner_offboard.launch.py \
   depth_cloud_topic:=/sim/mid360/points \
   sim_imu_topic:=/sim/imu \
   fixed_goal_altitude_m:=1.5 \
-  max_vel:=0.75 \
-  max_acc:=1.0 \
-  planning_horizon:=9.0 \
+  max_vel:=0.25 \
+  max_acc:=0.35 \
+  planning_horizon:=4.0 \
   map_size_x:=30.0 \
   map_size_y:=30.0 \
   map_size_z:=4.0 \
@@ -110,7 +112,7 @@ ros2 launch px4_trajectory_interface ego_planner_offboard.launch.py \
   control_points_distance:=0.25 \
   max_jerk:=2.5 \
   ground_height:=0.2 \
-  trajectory_auto_arm:=true \
+  trajectory_auto_arm:=false \
   trajectory_auto_set_offboard:=true
 ```
 
@@ -197,12 +199,12 @@ python3 /home/p/px4_ros2_ws/scripts/validate_fastlio_ego_avoidance.py \
 - `required_clearance_m = 0.45`
 - `target_threshold = 0.45`
 
-当前这一版 launch 默认参数已经进一步收紧，目标是抑制“先高空大绕行、最后贴着障碍角点回切”的轨迹形态。如果冷启动后仍然只是“能绕过但 clearance 不稳定”，建议按下面顺序继续细调，而不是一次改很多项：
+当前 launch 默认采用 `max_vel=0.25`、`max_acc=0.35`、`planning_horizon=4.0` 的保守回归参数。如果冷启动后仍然只是“能绕过但 clearance 不稳定”，建议按下面顺序继续细调，而不是一次改很多项：
 
 1. 当前推荐先固定 `collision_distance = 0.95`
 2. 当前推荐先观察 `obstacle_inflation = 0.78` 是否足以消除贴角路径
 3. `virtual_ceil_height`：必要时从 `2.4` 再降到 `2.2`
-4. `max_vel`：必要时从 `0.75` 再降到 `0.65`
+4. `max_vel`：当前保持 `0.25`，在连续回归通过前不要提高
 
 每次只改一项后重新冷启动复验，避免把“真正起作用的参数”混在一起。
 
@@ -300,9 +302,9 @@ ros2 launch px4_trajectory_interface ego_planner_offboard.launch.py \
   depth_cloud_topic:=/sim/mid360/points \
   sim_imu_topic:=/sim/imu \
   fixed_goal_altitude_m:=1.5 \
-  max_vel:=0.75 \
-  max_acc:=1.0 \
-  planning_horizon:=9.0 \
+  max_vel:=0.25 \
+  max_acc:=0.35 \
+  planning_horizon:=4.0 \
   map_size_x:=30.0 \
   map_size_y:=30.0 \
   map_size_z:=4.0 \
@@ -315,7 +317,7 @@ ros2 launch px4_trajectory_interface ego_planner_offboard.launch.py \
   max_jerk:=2.5 \
   ground_height:=0.2 \
   launch_rviz:=true \
-  trajectory_auto_arm:=true \
+  trajectory_auto_arm:=false \
   trajectory_auto_set_offboard:=true
 ```
 
@@ -390,3 +392,34 @@ bash /home/p/px4_ros2_ws/scripts/validate_qgc_rtl_takeover.sh
 grep -n "releasing QGC goal protection\|requested ROS2 external mode" .runtime/logs/ego_planner_offboard.log
 grep -n "failsafe\|nav_state" .runtime/logs/ego_validation.log 2>/dev/null || true
 ```
+
+### 11. 自动化仿真回归（当前主线）
+
+规划链启动并稳定后，按风险从低到高执行。默认先跑不解锁链路：
+
+```bash
+PROFILE=chain REPEAT_COUNT=3 ./scripts/run_ego_sim_regression.sh
+```
+
+需要解锁 SITL 的 profile 必须显式确认这是仿真环境：
+
+```bash
+CONFIRM_SIMULATION_FLIGHT=YES PROFILE=small REPEAT_COUNT=3 ./scripts/run_ego_sim_regression.sh
+CONFIRM_SIMULATION_FLIGHT=YES PROFILE=avoidance REPEAT_COUNT=3 ./scripts/run_ego_sim_regression.sh
+CONFIRM_SIMULATION_FLIGHT=YES PROFILE=takeover REPEAT_COUNT=3 ./scripts/run_ego_sim_regression.sh
+```
+
+脚本会把每轮输出保存到 `.runtime/regression/`，并只扫描本轮新增的 planner 日志。出现下列任一诊断即判回归失败：
+
+- `drone is in obstacle`
+- `First 3 control points in obstacles`
+- `Ran out of pool`
+- 从 `[0, 0, 0]` 修正局部目标
+
+也可以独立扫描已有日志：
+
+```bash
+python3 scripts/check_ego_planner_log.py .runtime/logs/ego_planner_offboard.log
+```
+
+注意：连续 profile 测试要求每轮均已 `LAND_COMPLETE` 且 disarm。如果某轮异常退出，必须先运行 `./scripts/stop_px4_sim.sh`，冷启动后再测，不要在脏状态下继续下一轮。

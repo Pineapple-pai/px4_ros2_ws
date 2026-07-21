@@ -26,15 +26,15 @@ LIVOX_CONFIG="${LIVOX_CONFIG:-${WS_DIR}/src/livox_ros_driver2/config/MID360_conf
 FASTLIO_CONFIG_PATH="${FASTLIO_CONFIG_PATH:-${WS_DIR}/src/px4_fastlio_bridge/config}"
 FASTLIO_CONFIG_FILE="${FASTLIO_CONFIG_FILE:-mid360_ego_planner.template.yaml}"
 
-EGO_MAX_VEL="${EGO_MAX_VEL:-1.5}"
-EGO_MAX_ACC="${EGO_MAX_ACC:-2.0}"
-EGO_PLANNING_HORIZON="${EGO_PLANNING_HORIZON:-7.5}"
+EGO_MAX_VEL="${EGO_MAX_VEL:-0.25}"
+EGO_MAX_ACC="${EGO_MAX_ACC:-0.35}"
+EGO_PLANNING_HORIZON="${EGO_PLANNING_HORIZON:-4.0}"
 EGO_MAP_SIZE_X="${EGO_MAP_SIZE_X:-30.0}"
 EGO_MAP_SIZE_Y="${EGO_MAP_SIZE_Y:-30.0}"
 EGO_MAP_SIZE_Z="${EGO_MAP_SIZE_Z:-4.0}"
-EGO_OBSTACLE_INFLATION="${EGO_OBSTACLE_INFLATION:-1.0}"
-EGO_COLLISION_DISTANCE="${EGO_COLLISION_DISTANCE:-1.25}"
-EGO_COLLISION_WEIGHT="${EGO_COLLISION_WEIGHT:-5.0}"
+EGO_OBSTACLE_INFLATION="${EGO_OBSTACLE_INFLATION:-0.90}"
+EGO_COLLISION_DISTANCE="${EGO_COLLISION_DISTANCE:-0.80}"
+EGO_COLLISION_WEIGHT="${EGO_COLLISION_WEIGHT:-10.0}"
 EGO_GROUND_HEIGHT="${EGO_GROUND_HEIGHT:-0.2}"
 
 if [[ "${USE_DEPTH_CAMERA_FASTLIO}" == "true" && "${PX4_MODEL}" == "iris_rplidar" ]]; then
@@ -102,4 +102,9 @@ ros2 launch px4_trajectory_interface ego_planner_offboard.launch.py \
   obstacle_inflation:="${EGO_OBSTACLE_INFLATION}" \
   collision_distance:="${EGO_COLLISION_DISTANCE}" \
   collision_weight:="${EGO_COLLISION_WEIGHT}" \
-  ground_height:="${EGO_GROUND_HEIGHT}"
+  ground_height:="${EGO_GROUND_HEIGHT}" \
+  trajectory_auto_arm:=false \
+  trajectory_auto_set_offboard:=true \
+  require_armed_before_offboard:=true \
+  require_local_position_before_offboard:=true \
+  align_planner_frame_to_px4_local:=true

@@ -26,6 +26,14 @@ def main() -> int:
     parser.add_argument("--max-move-pass-m", type=float, default=0.90)
     parser.add_argument("--max-alt-pass-m", type=float, default=2.20)
     parser.add_argument("--offboard-warmup-cycles", type=int, default=30)
+    parser.add_argument("--setpoint-quiet-window-s", type=float, default=0.75)
+    parser.add_argument("--max-frame-horizontal-error-m", type=float, default=1.0)
+    parser.add_argument("--max-frame-vertical-error-m", type=float, default=0.6)
+    parser.add_argument(
+        "--inject-helper-timeout-after-arm",
+        action="store_true",
+        help="Simulation-only safety test: fail immediately after ARM and verify LAND/disarm cleanup.",
+    )
     args = parser.parse_args()
 
     try:
@@ -173,6 +181,46 @@ def main() -> int:
         else:
             print("BATTERY_STATUS unavailable")
 
+    def land_and_wait(reason: str) -> bool:
+        """Common cleanup for every failure after an ARM command was sent."""
+        print(f"SAFETY_CLEANUP reason={reason}")
+        deadline = time.time() + max(10.0, args.land_timeout_s)
+        last_land = 0.0
+        last_print = 0.0
+        while time.time() < deadline:
+            spin_for(0.05)
+            st = state["status"]
+            pos = px4_enu()
+            now = time.time()
+            if st and st.arming_state == VehicleStatus.ARMING_STATE_DISARMED:
+                altitude = pos[2] if pos else float("nan")
+                if pos is None or altitude < args.land_complete_altitude_max_m:
+                    print("LAND_COMPLETE alt=%.2f nav=%s armed=%s" % (altitude, st.nav_state, st.arming_state))
+                    return True
+            if now - last_land > 0.5:
+                publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
+                last_land = now
+            if now - last_print > 3.0:
+                print(
+                    "landing_wait alt=%.2f nav=%s armed=%s failsafe=%s"
+                    % (
+                        pos[2] if pos else -999.0,
+                        st.nav_state if st else -1,
+                        st.arming_state if st else -1,
+                        bool(st.failsafe) if st else True,
+                    )
+                )
+                last_print = now
+            time.sleep(0.05)
+        st = state["status"]
+        pos = px4_enu()
+        print(
+            "LAND_TIMEOUT alt=%.2f nav=%s armed=%s"
+            % (pos[2] if pos else -999.0, st.nav_state if st else -1, st.arming_state if st else -1),
+            file=sys.stderr,
+        )
+        return False
+
     wait_deadline = time.time() + 20.0
     while time.time() < wait_deadline:
         spin_for(0.1)
@@ -181,7 +229,22 @@ def main() -> int:
             break
 
     if state["status"] is None or state["lpos"] is None or state["odom"] is None:
-        print("Missing initial PX4 or planner topics.", file=sys.stderr)
+        missing_topics = []
+        if state["status"] is None:
+            missing_topics.append("/fmu/out/vehicle_status_v4")
+        if state["lpos"] is None:
+            missing_topics.append("/fmu/out/vehicle_local_position_v1")
+        if state["odom"] is None:
+            missing_topics.append("/odom")
+        print(
+            "Missing initial runtime topics: " + ", ".join(missing_topics),
+            file=sys.stderr,
+        )
+        print(
+            "Start PX4 SITL, MicroXRCEAgent, FAST-LIO/odom bridge, Ego-Planner, "
+            "and trajectory_interface before running this validator.",
+            file=sys.stderr,
+        )
         node.destroy_node()
         rclpy.shutdown()
         return 1
@@ -205,13 +268,45 @@ def main() -> int:
         st.arming_state != VehicleStatus.ARMING_STATE_DISARMED
         or st.nav_state not in allowed_initial_nav_states
         or st.failsafe
+        or not st.pre_flight_checks_pass
         or initial_px4[2] > args.initial_ground_altitude_max_m
     ):
         print(
             "Refusing to start from a dirty initial state: "
             "expected disarmed ground POSCTL/AUTO_LOITER without failsafe, got "
             f"armed={st.arming_state} nav={st.nav_state} "
-            f"failsafe={bool(st.failsafe)} alt={initial_px4[2]:.2f}",
+            f"failsafe={bool(st.failsafe)} preflight={bool(st.pre_flight_checks_pass)} "
+            f"alt={initial_px4[2]:.2f}",
+            file=sys.stderr,
+        )
+        node.destroy_node()
+        rclpy.shutdown()
+        return 1
+
+    initial_planner = planner_enu()
+    horizontal_error = math.hypot(initial_planner[0] - initial_px4[0], initial_planner[1] - initial_px4[1])
+    vertical_error = abs(initial_planner[2] - initial_px4[2])
+    if (
+        horizontal_error > args.max_frame_horizontal_error_m
+        or vertical_error > args.max_frame_vertical_error_m
+    ):
+        print(
+            "Refusing to start with planner/PX4 frame mismatch: "
+            f"horizontal={horizontal_error:.3f} vertical={vertical_error:.3f} "
+            f"limits={args.max_frame_horizontal_error_m:.3f}/{args.max_frame_vertical_error_m:.3f}",
+            file=sys.stderr,
+        )
+        node.destroy_node()
+        rclpy.shutdown()
+        return 1
+
+    setpoints_before_quiet_check = state["setpoint"]
+    spin_for(max(0.25, args.setpoint_quiet_window_s))
+    stale_setpoints = state["setpoint"] - setpoints_before_quiet_check
+    if stale_setpoints > 0:
+        print(
+            "Refusing helper takeoff because /fmu/in/trajectory_setpoint is already active "
+            f"({stale_setpoints} messages during quiet window). Restart/reset the planning execution chain.",
             file=sys.stderr,
         )
         node.destroy_node()
@@ -232,6 +327,12 @@ def main() -> int:
     time.sleep(0.5)
     publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, param1=1.0, param2=6.0)
     print("helper requested OFFBOARD hover takeoff")
+    if args.inject_helper_timeout_after_arm:
+        print("INJECTED takeoff_helper_timeout", file=sys.stderr)
+        cleaned = land_and_wait("injected_helper_timeout")
+        node.destroy_node()
+        rclpy.shutdown()
+        return 2 if cleaned else 3
 
     takeoff_deadline = time.time() + max(10.0, args.takeoff_timeout_s)
     last_mode_request = 0.0
@@ -265,9 +366,10 @@ def main() -> int:
             % (pos[2] if pos else -999.0, st.nav_state if st else -1, st.arming_state if st else -1),
             file=sys.stderr,
         )
+        cleaned = land_and_wait("takeoff_helper_timeout")
         node.destroy_node()
         rclpy.shutdown()
-        return 1
+        return 1 if cleaned else 3
 
     settle_deadline = time.time() + max(0.5, args.post_takeoff_settle_s)
     while time.time() < settle_deadline:
@@ -275,16 +377,17 @@ def main() -> int:
         spin_for(0.05)
         time.sleep(0.05)
 
-    mav = mavutil.mavlink_connection("udp:127.0.0.1:14540", source_system=253)
-    mav.wait_heartbeat(timeout=10)
     try:
+        mav = mavutil.mavlink_connection("udp:127.0.0.1:14540", source_system=253)
+        mav.wait_heartbeat(timeout=10)
         mav.set_mode("LOITER")
         print("helper requested LOITER handover hold")
     except Exception as exc:
         print(f"failed to request LOITER via MAVLink: {exc}", file=sys.stderr)
+        cleaned = land_and_wait("loiter_handover_request_failed")
         node.destroy_node()
         rclpy.shutdown()
-        return 1
+        return 1 if cleaned else 3
 
     handover_deadline = time.time() + 8.0
     while time.time() < handover_deadline:
@@ -307,9 +410,10 @@ def main() -> int:
             ),
             file=sys.stderr,
         )
+        cleaned = land_and_wait("failed_to_leave_offboard")
         node.destroy_node()
         rclpy.shutdown()
-        return 1
+        return 1 if cleaned else 3
 
     st = state["status"]
     print(
@@ -425,46 +529,13 @@ def main() -> int:
         )
     )
 
-    for _ in range(6):
-        publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
-        spin_for(0.1)
     print("sent_land")
-
-    land_deadline = time.time() + max(10.0, args.land_timeout_s)
-    last_status_print = 0.0
-    while time.time() < land_deadline:
-        spin_for(0.1)
-        st = state["status"]
-        pos = px4_enu()
-        now = time.time()
-        if now - last_status_print > 3.0 and st and pos:
-            print(
-                "landing_wait alt=%.2f nav=%s armed=%s failsafe=%s"
-                % (pos[2], st.nav_state, st.arming_state, bool(st.failsafe))
-            )
-            last_status_print = now
-        if (
-            st
-            and pos
-            and st.arming_state == VehicleStatus.ARMING_STATE_DISARMED
-            and pos[2] < args.land_complete_altitude_max_m
-        ):
-            print("LAND_COMPLETE alt=%.2f nav=%s armed=%s" % (pos[2], st.nav_state, st.arming_state))
-            node.destroy_node()
-            rclpy.shutdown()
-            return 0 if passed else 2
-        time.sleep(0.05)
-
-    st = state["status"]
-    pos = px4_enu()
-    print(
-        "LAND_TIMEOUT alt=%.2f nav=%s armed=%s"
-        % (pos[2] if pos else -999.0, st.nav_state if st else -1, st.arming_state if st else -1),
-        file=sys.stderr,
-    )
+    cleaned = land_and_wait("normal_test_completion")
     node.destroy_node()
     rclpy.shutdown()
-    return 3
+    if not cleaned:
+        return 3
+    return 0 if passed else 2
 
 
 if __name__ == "__main__":

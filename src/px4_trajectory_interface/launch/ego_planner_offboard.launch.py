@@ -122,6 +122,21 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument("trajectory_auto_set_offboard", default_value="true"),
         DeclareLaunchArgument(
+            "vehicle_status_timeout_s",
+            default_value="0.5",
+            description="Stop publishing Offboard setpoints when PX4 status is stale",
+        ),
+        DeclareLaunchArgument(
+            "local_position_timeout_s",
+            default_value="0.5",
+            description="Stop publishing Offboard setpoints when PX4 local position is stale",
+        ),
+        DeclareLaunchArgument(
+            "stop_on_px4_failsafe",
+            default_value="true",
+            description="Permanently inhibit planner output for the armed epoch when PX4 reports failsafe",
+        ),
+        DeclareLaunchArgument(
             "suspend_on_external_mode_command",
             default_value="true",
             description="Suspend trajectory output when PX4 receives LAND/RTL/disarm or a non-Offboard mode command",
@@ -161,9 +176,17 @@ def generate_launch_description():
             default_value="true",
             description="Translate planner world position commands into the current PX4 local ENU frame at handover",
         ),
-        DeclareLaunchArgument("max_vel", default_value="0.75"),
-        DeclareLaunchArgument("max_acc", default_value="1.0"),
-        DeclareLaunchArgument("planning_horizon", default_value="9.0"),
+        DeclareLaunchArgument(
+            "max_vel",
+            default_value="0.25",
+            description="Conservative default for simulation regression; raise only in an explicit test profile",
+        ),
+        DeclareLaunchArgument(
+            "max_acc",
+            default_value="0.35",
+            description="Conservative default for simulation regression; raise only in an explicit test profile",
+        ),
+        DeclareLaunchArgument("planning_horizon", default_value="4.0"),
         DeclareLaunchArgument("emergency_time", default_value="0.8"),
         DeclareLaunchArgument("obstacle_inflation", default_value="0.40"),
         DeclareLaunchArgument(
@@ -579,6 +602,8 @@ def generate_launch_description():
                 "vehicle_command_topic": vehicle_command_in_topic,
                 "vehicle_command_monitor_topic": vehicle_command_monitor_topic,
                 "command_timeout_s": 0.25,
+                "vehicle_status_timeout_s": LaunchConfiguration("vehicle_status_timeout_s"),
+                "local_position_timeout_s": LaunchConfiguration("local_position_timeout_s"),
                 "offboard_setpoint_warmup_count": 20,
                 "auto_set_offboard": LaunchConfiguration("trajectory_auto_set_offboard"),
                 "auto_arm": LaunchConfiguration("trajectory_auto_arm"),
@@ -605,6 +630,7 @@ def generate_launch_description():
                 "align_planner_frame_to_px4_local": LaunchConfiguration(
                     "align_planner_frame_to_px4_local"
                 ),
+                "stop_on_px4_failsafe": LaunchConfiguration("stop_on_px4_failsafe"),
             }],
         ),
         Node(

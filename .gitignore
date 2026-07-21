@@ -8,8 +8,14 @@
 /.runtime
 /tmp
 /experiments
+/backups
+/mid360
+/~
 *.bag
 *.pyc
+*~
+*.bak
+.DS_Store
 __pycache__/
 **/__pycache__/
 *.log
